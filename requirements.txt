@@ -1,0 +1,41 @@
+# ===== Core Framework =====
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# ===== AI/ML =====
+transformers==4.35.2
+torch==2.1.0
+sentencepiece==0.1.99  # Para algunos tokenizers
+
+# ===== Database =====
+sqlalchemy==2.0.23
+alembic==1.12.1  # Para migraciones de DB
+psycopg2-binary==2.9.9  # PostgreSQL driver
+
+# ===== Caching =====
+redis==5.0.1
+hiredis==2.2.3  # Parser rápido para Redis
+
+# ===== HTTP Client =====
+httpx==0.25.2  # Para llamadas a n8n
+aiohttp==3.9.1  # Cliente HTTP asíncrono alternativo
+
+# ===== Utilities =====
+python-dotenv==1.0.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0  # Para JWT
+passlib[bcrypt]==1.7.4  # Para hashing de passwords
+
+# ===== Development =====
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.12.0  # Formateador de código
+flake8==6.1.0  # Linter
+mypy==1.7.1  # Type checker
+
+# ===== Monitoring (opcional) =====
+# prometheus-client==0.19.0
+# sentry-sdk==1.39.1

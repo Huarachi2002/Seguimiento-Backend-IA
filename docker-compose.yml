@@ -1,0 +1,109 @@
+# ========================================
+# Docker Compose para WhatsApp AI Assistant
+# ========================================
+# Este archivo orquesta múltiples servicios
+
+version: '3.8'
+
+services:
+  # ===== Servicio principal: FastAPI Backend =====
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-ai-api
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      # Sobrescribir variables de entorno
+      - ENVIRONMENT=production
+      - DATABASE_URL=postgresql://postgres:password@db:5432/whatsapp_ai
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+    env_file:
+      - .env
+    volumes:
+      # Montar logs para persistencia
+      - ./logs:/app/logs
+      # Montar cache de modelos
+      - model-cache:/app/models
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+    networks:
+      - whatsapp-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===== Base de Datos: PostgreSQL =====
+  db:
+    image: postgres:15-alpine
+    container_name: whatsapp-ai-db
+    environment:
+      POSTGRES_DB: whatsapp_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - whatsapp-ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Cache: Redis =====
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp-ai-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - whatsapp-ai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== (Opcional) Adminer - UI para DB =====
+  adminer:
+    image: adminer:latest
+    container_name: whatsapp-ai-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - whatsapp-ai-network
+    profiles:
+      - dev  # Solo se inicia con: docker-compose --profile dev up
+
+# ===== Volumes =====
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  model-cache:
+    driver: local
+
+# ===== Networks =====
+networks:
+  whatsapp-ai-network:
+    driver: bridge

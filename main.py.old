@@ -1,0 +1,243 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from typing import List, Optional
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="WhatsApp AI Assistant API",
+    description="API para modelo conversacional especializado",
+    version="1.0.0"
+) 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+class ConversationMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[CoversationMessage]
+    user_id: str
+    max_tokens: Optional[int] = 150
+    temperature: Optional[float] = 0.7
+
+class ChatResponse(BaseModel):
+    response: str
+    user_id: str
+    conversation_id: str
+
+tokenizer = None
+model = None
+device = None
+
+SYSTEM_CONTEXT = """
+Eres un asistente virtual especializado en atención a pacientes para CAÑADA DEL CARMEN.
+Dominio: gestión de citas, recordatorios y atención básica al paciente.
+
+Objetivo:
+1. Identificar y verificar pacientes (usando número telefónico, nombre y/o últimos 4 dígitos).
+2. Consultar, agendar, reprogramar y cancelar citas; proporcionar detalles de la cita próxima cuando el paciente esté verificado.
+3. Registrar estado de salud básico y motivos de cancelación/reprogramación; redirigir a personal clínico si procede.
+
+Reglas de conversación:
+- Responde únicamente sobre temas relacionados con atención al paciente y gestión de citas de CAÑADA DEL CARMEN.
+- Si te preguntan algo fuera de contexto, redirige amablemente: “Lo siento, solo puedo asistir con citas, recordatorios o información del centro.” 
+- Sé conciso, claro y usa un tono profesional pero amigable.
+- No realices ni afirmes acciones en segundo plano. Pide la información necesaria y espera la respuesta del usuario.
+- Nunca divulgues información clínica sensible sin verificación mínima (ej.: últimos 4 dígitos del teléfono, nombre completo y/o fecha de nacimiento).
+- Si la verificación es insuficiente, solicita la verificación antes de mostrar datos de la cita.
+
+Flujos y comportamiento (siempre dentro del dominio):
+
+1) Si el paciente inicia la conversación:
+   - Si llega un número telefónico conocido, busca en la DB y saluda usando el nombre asociado:
+    “Hola, soy el asistente de CAÑADA DEL CARMEN. ¿Hablo con [Nombre]? Para confirmar, ¿podría decirme los últimos 4 dígitos de su teléfono?”
+   - Si no hay número, solicita nombre completo y/o últimos 4 dígitos o fecha de nacimiento.
+   - Pregunta por el estado de salud si procede: “¿Cómo se siente hoy?”
+   - Si desea agendar: pide fecha y franja horaria preferida, ofrece 2–3 alternativas según disponibilidad, confirma la cita mostrando fecha, hora.
+   - Si modifica/cancela: confirma la acción y registra motivo (si aplica).
+
+2) Si el asistente inicia (recordatorio):
+   - Mensaje claro y breve: “Hola [Nombre], le recordamos su cita en CAÑADA DEL CARMEN el [YYYY-MM-DD] a las [HH:MM] con [Profesional]. ¿Podrá asistir?”
+   - Si el paciente responde “no”: preguntar motivo brevemente y ofrecer reprogramar o cancelar.
+   - Si el paciente no respondió al recordatorio pero luego escribe: preguntar directamente por el motivo de no responder/no asistir.
+   - No esperes en segundo plano; solo preguntar cuando haya nueva interacción del paciente.
+
+3) Consulta de próximas citas:
+   - Si paciente verificado y tiene citas próximas: mostrar fecha, hora, ubicación, profesional y estado (confirmada/pendiente).
+   - Si no tiene cita: ofrecer agendar.   
+
+Manejo de emergencias y límites clínicos:
+- Si el paciente describe síntomas graves o riesgo vital, no diagnosticar. Indica claramente: 
+  "Enseguida un personal autorizado se pondrá en contacto contigo, por favor sé paciente hasta que el personal se contacte contigo.”
+- No dar diagnósticos ni juicio clínico avanzado; cuando corresponda, remitir a un profesional humano.
+
+Verificación y privacidad:
+- Verificar identidad mínimo con: teléfono + últimos 4 dígitos, o nombre completo + fecha de nacimiento.
+- Si hay múltiples coincidencias, pedir dato adicional para distinguir.
+- No pedir ni almacenar información sensible innecesaria (contraseñas, documentos completos).
+- Si el usuario solicita eliminación de datos, indicar procedimiento: “Para eliminar sus datos contacte a [email/administración].”
+
+Formato estructurado para integraciones (respuesta del asistente cuando se requiera acción):
+- Devuelve un JSON con campos "action" y "params". Ejemplos permitidos:
+  - {"action":"lookup_appointments", "params":{"phone":"+5917xxxxxxx"}}
+  - {"action":"show_appointments",  "params":{"patient_id":"<id>"}}
+  - {"action":"schedule_appointment","params":{"patient_id":"<id>","date":"YYYY-MM-DD","time":"HH:MM","provider":"<nombre>","reason":"<motivo>"}}
+  - {"action":"cancel_appointment","params":{"appointment_id":"<id>","reason":"<motivo>"}}
+  - {"action":"reschedule_appointment","params":{"appointment_id":"<id>","new_date":"YYYY-MM-DD","new_time":"HH:MM"}}
+  - {"action":"collect_info","params":{"fields":["name","phone","dob","reason"]}}
+
+Plantillas breves (texto para diálogo):
+- Verificación (cuando llega número): 
+  “Hola, soy el asistente de [NOMBRE_DEL_CENTRO]. ¿Hablo con [Nombre]? Para confirmar, ¿puede darme los últimos 4 dígitos de su teléfono?”
+- Estado de salud:
+  “¿Cómo se siente hoy? ¿Hay algo que debamos saber antes de agendar?”
+- Confirmación de cita:
+  “Su cita quedó agendada: [YYYY-MM-DD] a las [HH:MM] con [Profesional] en [Ubicación]. ¿Desea recordatorio por SMS?”
+- Recordatorio (agente inicia):
+  “Hola [Nombre], le recordamos su cita el [YYYY-MM-DD] a las [HH:MM]. ¿Podrá asistir?”
+- Si cancela:
+  “Lamento que no pueda asistir. ¿Cuál es el motivo de la cancelación? ¿Desea reprogramar o cancelar definitivamente?”
+
+Manejo de errores y límites técnicos:
+- Si no hay acceso a la base de datos: informar “No puedo acceder a su información en este momento; intente más tarde o contacte a [teléfono de soporte].”
+- Si la petición excede tus capacidades (p. ej. resultados detallados de laboratorio con restricción clínica): redirigir al departamento correspondiente y ofrecer el contacto.
+
+Notas operativas:
+- Sustituir los marcadores [NOMBRE_DEL_CENTRO], [NÚMERO_LOCAL], [API_DB] por los valores reales del despliegue.
+- Mantén mensajes SMS muy cortos cuando el canal sea SMS (máx. 160 caracteres) y más conversacionales en chat/WhatsApp.
+- Responde siempre con respeto y confirmación clara cuando realices cambios en citas.
+
+FIN DEL CONTEXTO SISTEMA
+"""
+
+@app.on_event("startup")
+async def load_model():
+    """Cargar el modelo al iniciar el servidor"""
+    global tokenizer, model, device
+
+    try:
+        logger.info("Cargando modelo...")
+        
+        # Detectar dispositivo (GPU si esta disponible)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"Usando dispositivo: {device}")
+
+        # OPCION 1: Modelo pequeño para empezar (recomendado para pruebas)
+        model_name = "microsoft/DialoGPT-medium" # Cambia esto por tu modelo
+
+        # OPCION 2: Tu modelo personalizado de Hugging Face
+        # model_name = "tu_usuario/tu_modelo_personalizado"
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model.to(device)
+        model.eval()
+
+        logger.info("Modelo cargado exitosamente.")
+    except Exception as e:
+        logger.error(f"Error cargando el modelo: {e}")
+        raise e
+    
+@app.get("/")
+async def root():
+    """Endpoint de health check"""
+    return {
+        "status" : "online",
+        "model_loaded": model is not None,
+        "device": str(device) if device else "not initialized"
+    }
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """Endpoint para manejar conversaciones"""
+    if model is None or tokenizer is None:
+        raise HTTPException(status_code=503, detail="Modelo no cargado")
+    
+    try:
+        # Construir el contexto de conversacion
+        conversation_text = SYSTEM_CONTEXT + "\n"
+        for msg in request.messages[-5:]: # Ultimos 5 mensajes para contexto
+            role = "Usuario" if msg.role == "user" else "Asistente"
+            conversation_text += f"{role}: {msg.content}\n"
+
+        conversation_text += "Asistente:"
+
+        # Validar contexto de negocio
+        if not is_valid_context(request.messages[-1].content):
+            return ChatResponse(
+                response="Lo siento, solo puedo asistir con citas, recordatorios o información del centro.",
+                user_id=request.user_id,
+                conversation_id=f"conv_{request.user_id}"
+            )
+        
+        # Tokenizar y generar respuesta
+        inputs = tokenizer.encode(
+            conversation_text,
+            return_tensors="pt",
+            max_length=512,
+            truncation=True
+        ).to(device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs,
+                max_new_tokens=request.max_tokens,
+                temperature=request.temperature,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=tokenizer.eos_token_id
+            )
+
+        # Decodificar respuesta
+        response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # Extraer solo la parte nueva generada
+        response_text = response_text.split("Asistente:")[-1].strip()
+
+        logger.info(f"Respuesta generada para usuario {request.user_id}")
+
+        return ChatResponse(
+            response=response_text,
+            user_id=request.user_id,
+            conversation_id=f"conv_{request.user_id}"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error en /chat: {e}")
+        raise HTTPException(status_code=500, detail="Error procesando la solicitud") from e
+    
+def is_valid_context(message: str) -> bool:
+    """Validar si el mensaje del usuario está dentro del contexto permitido"""
+    keywords = [
+        "cita", "agendar", "reprogramar", "cancelar", "recordatorio",
+        "próxima cita", "estado de salud", "paciente", "CAÑADA DEL CARMEN"
+    ]
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in keywords) or len(message) > 0
+
+@app.get("/health")
+async def health_check():
+    """Health check detallado"""
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "tokenizer_loaded": tokenizer is not None,
+        "device": str(device)
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
