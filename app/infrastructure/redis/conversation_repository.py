@@ -89,13 +89,13 @@ class ConversationRepository:
                 "updated_at": conversation.updated_at.isoformat(),
                 "messages": [
                     {
-                        "message_id": msg.message_id,
+                        "message_id": f"msg_{idx}_{int(msg.timestamp.timestamp())}",
                         "role": msg.role.value,
                         "content": msg.content,
                         "timestamp": msg.timestamp.isoformat(),
                         "metadata": msg.metadata
                     }
-                    for msg in conversation.messages
+                    for idx, msg in enumerate(conversation.messages)
                 ],
                 "metadata": conversation.metadata
             }
@@ -144,7 +144,6 @@ class ConversationRepository:
             # Deserializar mensajes
             messages = [
                 Message(
-                    message_id=msg["message_id"],
                     role=MessageRole(msg["role"]),
                     content=msg["content"],
                     timestamp=datetime.fromisoformat(msg["timestamp"]),
@@ -172,6 +171,8 @@ class ConversationRepository:
             
         except Exception as e:
             logger.error(f"❌ Error recuperando conversación: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def exists(self, user_id: str) -> bool:

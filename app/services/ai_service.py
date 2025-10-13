@@ -214,29 +214,58 @@ class AIService:
         """
         Construye el prompt completo para el modelo.
         
-        Estructura:
-        1. Contexto del sistema (instrucciones generales)
-        2. Historial de conversación (últimos N mensajes)
-        3. Indicador de respuesta del asistente
+        CRÍTICO: Este formato DEBE coincidir EXACTAMENTE con el usado en entrenamiento.
+        
+        Estructura (igual que tuberculosis_conversations_v2.json):
+        1. Contexto del sistema con reglas embebidas
+        2. Estado del paciente (REGISTRADO/NO REGISTRADO)
+        3. Información de cita si está registrado
+        4. Historial de conversación
+        5. Indicador "Asistente:" para generar respuesta
         
         Args:
             conversation: Conversación con historial
         
         Returns:
-            Prompt formateado
+            Prompt formateado EXACTAMENTE como en entrenamiento
         """
-        prompt = self._system_context + "\n\n"
+        # 1. Sistema + Reglas (igual que dataset)
+        prompt = (
+            "Eres un asistente virtual EXCLUSIVO del servicio de Tuberculosis "
+            f"del centro de salud {settings.medical_center_name}.\n\n"
+            "REGLAS IMPORTANTES:\n"
+            "1. SOLO atiendes consultas sobre TUBERCULOSIS\n"
+            "2. Máximo 2 oraciones por respuesta\n"
+            "3. Usa el nombre del paciente si lo conoces\n"
+            "4. Sé profesional y empático\n"
+            "5. Si preguntan por otro servicio, redirige amablemente\n\n"
+        )
         
-        # Añadir últimos mensajes (límite configurado)
+        # 2. Estado del paciente
+        # TODO: Cuando implementes la BD, aquí verificas si está registrado
+        # Por ahora, asume NO REGISTRADO
+        patient_registered = False  # Obtener de BD en el futuro
+        
+        if patient_registered:
+            # Si está registrado, incluir info de cita (obtener de BD)
+            prompt += "Paciente REGISTRADO\n"
+            prompt += "Próxima cita: [FECHA] a las [HORA]\n\n"
+        else:
+            prompt += "Paciente NO REGISTRADO\n\n"
+        
+        # 3. Historial de conversación (últimos N mensajes)
         recent_messages = conversation.get_recent_messages(
             limit=settings.max_conversation_history
         )
         
         for msg in recent_messages:
-            role_name = "Usuario" if msg.role == MessageRole.USER else "Asistente"
+            role_name = "Paciente" if msg.role == MessageRole.USER else "Asistente"
             prompt += f"{role_name}: {msg.content}\n"
         
+        # 4. Indicador de respuesta (igual que dataset)
         prompt += "Asistente:"
+
+        logger.debug(f"📝 Prompt construido (primeros 500 chars):\n{prompt[:500]}...")
         
         return prompt
     
@@ -266,6 +295,9 @@ class AIService:
             max_length=512,
             truncation=True
         ).to(self.device)
+
+        # Obtener la longitud del prompt para extraer solo lo nuevo
+        prompt_length = inputs.shape[1]
         
         # Generar con el modelo
         with torch.no_grad():
@@ -275,18 +307,26 @@ class AIService:
                 temperature=temperature,
                 do_sample=True,
                 top_p=0.9,
+                top_k=50,
                 pad_token_id=self.tokenizer.eos_token_id,
-                repetition_penalty=1.2  # Penaliza repeticiones
+                repetition_penalty=1.2,  # Penaliza repeticiones
+                no_repeat_ngram_size=3  # Evita n-gramas repetidos
             )
         
-        # Decodificar la respuesta
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Extraer solo la parte nueva (después de "Asistente:")
-        response = full_response.split("Asistente:")[-1].strip()
+        # Decodificar SOLO los tokens nuevos (no el prompt completo)
+        generated_tokens = outputs[0][prompt_length:]
+        response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+        logger.debug(f"📝 Respuesta bruta del modelo: {response[:100]}...")
         
         # Limpiar la respuesta
         response = self._clean_response(response)
+
+        if not response or len(response.strip()) < 5:
+            logger.warning("⚠️ Respuesta vacía o muy corta, usando respuesta por defecto")
+            # Generar respuesta contextual basada en el último mensaje
+            last_message = prompt.split("Usuario:")[-1].strip() if "Usuario:" in prompt else ""
+            response = self._get_fallback_response(last_message)
         
         return response
     
@@ -304,18 +344,82 @@ class AIService:
         Returns:
             Respuesta limpia
         """
-        # Truncar en el primer salto de línea doble (fin de párrafo)
+        # 1. Remover prefijos comunes que el modelo puede generar 
+        prefixes_to_remove = ["Asistente:", "Assistant:", "Bot:", "AI:"]
+        for prefix in prefixes_to_remove:
+            if response.startswith(prefix):
+                response = response[len(prefix):].strip()
+
+        # 2. Truncar en el primer salto de línea doble (fin de párrafo)
         if "\n\n" in response:
             response = response.split("\n\n")[0]
-        
-        # Truncar en "Usuario:" si aparece (error del modelo)
+
+        # 3. Truncar en "Usuario:" si aparece (error del modelo)
         if "Usuario:" in response:
             response = response.split("Usuario:")[0]
+
+        # 4. Truncas en "User:" tambien
+        if "User:" in response:
+            response = response.split("User:")[0]
         
-        # Limpiar espacios extras
+        # 5. Limpiar espacios extras
         response = " ".join(response.split())
         
+        # 6. Asegurar que termina con puntuacion
+        if response and response[-1] not in '.!?':
+            # Truncar en la ultima frase completa
+            for punct in ['.', '!', '?']:
+                if punct in response:
+                    response = response[:response.rfind(punct)+1]
+                    break
+
         return response.strip()
+    
+    def _get_fallback_response(self, last_message: str) -> str:
+        """
+        Genera una respuesta de respaldo cuando el modelo falla.
+        
+        Args:
+            last_message: Último mensaje del usuario
+        
+        Returns:
+            Respuesta contextual
+        """
+        last_message_lower = last_message.lower()
+        
+        # Respuestas contextuales según palabras clave
+        if any(word in last_message_lower for word in ['agendar', 'cita', 'programar']):
+            return (
+                f"¡Claro! Te ayudo a agendar una cita en {settings.medical_center_name}. "
+                f"¿Para qué especialidad necesitas la cita?"
+            )
+        
+        if any(word in last_message_lower for word in ['cancelar', 'anular']):
+            return (
+                "Entiendo que necesitas cancelar una cita. "
+                "Para verificar tu identidad, ¿me puedes dar los últimos 4 dígitos de tu número de teléfono?"
+            )
+        
+        if any(word in last_message_lower for word in ['reprogramar', 'cambiar']):
+            return (
+                "Te ayudo a reprogramar tu cita. "
+                "Primero, ¿me das los últimos 4 dígitos de tu teléfono para verificarte?"
+            )
+        
+        if any(word in last_message_lower for word in ['hola', 'buenos', 'buenas']):
+            return (
+                f"¡Hola! Bienvenido al asistente virtual de {settings.medical_center_name}. "
+                f"¿En qué puedo ayudarte hoy? Puedo ayudarte a:\n"
+                f"• Agendar una cita\n"
+                f"• Consultar tus próximas citas\n"
+                f"• Cancelar o reprogramar una cita"
+            )
+        
+        # Respuesta genérica
+        return (
+            f"Entiendo. ¿Podrías darme más detalles? "
+            f"Puedo ayudarte con citas médicas en {settings.medical_center_name}."
+        )
     
     def _is_valid_context(self, message: str) -> bool:
         """

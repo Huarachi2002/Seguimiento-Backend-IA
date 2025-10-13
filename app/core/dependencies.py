@@ -189,14 +189,25 @@ def get_config():
 def get_ai_service() -> AIService:
     """
     Proporciona el servicio de IA.
+
+    Usa el servicio global creado en main.py durante el startup.
     
     Returns:
         AIService instance
+
+    Raises:
+        HTTPException: Si el servicio no está listo
     """
-    from app.infrastructure.ai.model_loader import get_model_loader
-    
-    model_loader = get_model_loader()
-    return AIService(model_loader=model_loader)
+    from app.main import ai_service
+
+    if ai_service is None:
+        logger.error("❌ Servicio de IA no está listo")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Servicio de IA no está listo. Intenta nuevamente más tarde."
+        )
+
+    return ai_service
 
 
 # ===== Dependencia: Conversation Service =====
@@ -206,8 +217,12 @@ def get_conversation_service(
 ) -> ConversationService:
     """
     Proporciona el servicio de conversaciones.
+
+    Crea una nueva instancia del servicio con las dependencias inyectadas.
     
-    Inyecta tanto el AI Service como el Conversation Repository.
+    Args:
+        ai_service: Servicio de IA (inyectado)
+        conv_repo: Repositorio de conversaciones (inyectado)
     
     Returns:
         ConversationService instance
