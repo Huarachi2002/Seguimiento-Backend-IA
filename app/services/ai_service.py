@@ -15,9 +15,11 @@ Separa la lógica de negocio compleja de los controllers (endpoints).
 Hace el código más testeable y reutilizable.
 """
 
+from email.mime import message
 import re
 import json
 from typing import List, Optional, Tuple
+from urllib import response
 from app.domain.models import Message, MessageRole, ActionIntent, Conversation
 from app.domain.exceptions import ModelNotLoadedException, InvalidContextException
 from app.core.config import settings
@@ -35,7 +37,7 @@ class AIService:
     este servicio, no todo el código.
     """
     
-    def __init__(self, model, tokenizer, device):
+    def __init__(self, model, tokenizer, device, patient_service=None):
         """
         Inicializa el servicio de IA.
         
@@ -43,10 +45,12 @@ class AIService:
             model: Modelo de lenguaje cargado
             tokenizer: Tokenizer del modelo
             device: Dispositivo (cpu/cuda)
+            patient_service: Servicio para consultar información de pacientes
         """
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.patient_service = patient_service
         self._system_context = settings.get_system_context()
         
         logger.info(f"✅ AIService inicializado en dispositivo: {device}")
@@ -60,9 +64,10 @@ class AIService:
         """
         return self.model is not None and self.tokenizer is not None
     
-    def generate_response(
+    async def generate_response(
         self,
         conversation: Conversation,
+        user_id: str,
         max_tokens: int = None,
         temperature: float = None
     ) -> str:
@@ -72,8 +77,11 @@ class AIService:
         Este es el método principal del servicio. Toma una conversación
         completa y genera la siguiente respuesta del asistente.
         
+        AHORA consulta la BD para verificar si el paciente está registrado.
+        
         Args:
             conversation: Objeto Conversation con el historial
+            user_id: ID del usuario (teléfono) para consultar BD
             max_tokens: Máximo de tokens a generar (usa config si es None)
             temperature: Temperatura del modelo (usa config si es None)
         
@@ -93,19 +101,30 @@ class AIService:
         logger.info(f"🤖 Generando respuesta para conversación {conversation.conversation_id}")
         
         try:
-            # 1. Construir el prompt con contexto del sistema + historial
-            prompt = self._build_prompt(conversation)
+            # 1. Validar Contexto antes de construir el prompt
+            last_message = conversation.messages[-1].content if conversation.messages else ""
+
+            if not self._is_valid_tuberculosis_context(last_message):
+                logger.warning(f"⚠️ Mensaje fuera de contexto detectado: {last_message}")
+                return self._get_out_of_context_response()
+
+            # 2. Construir el prompt con contexto del sistema + historial + BD
+            prompt = await self._build_prompt(conversation, user_id)
             
-            # 2. Validar que el contexto es apropiado
+            # 3. Validar que el contexto es apropiado
             if not self._is_valid_context(conversation.messages[-1].content):
                 return self._get_out_of_context_response()
-            
-            # 3. Generar respuesta con el modelo
+
+            # 4. Generar respuesta con el modelo
             response = self._generate_with_model(
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature
             )
+
+            if not self._is_valid_response(response):
+                logger.warning(f"⚠️ Respuesta inválida detectada, usando respuesta por defecto")
+                return self._get_fallback_response(last_message)
             
             logger.info(f"✅ Respuesta generada exitosamente")
             return response
@@ -114,6 +133,103 @@ class AIService:
             logger.error(f"❌ Error generando respuesta: {e}")
             return "Lo siento, tuve un problema procesando tu mensaje. ¿Podrías reformularlo?"
     
+    def _is_valid_tuberculosis_context(self, message: str) -> bool:
+        """
+        Valida que el mensaje sea sobre TUBERCULOSIS.
+        
+        Returns:
+            True si es valido, False si esta fuera de contexto
+        """
+
+        message_lower = message.lower()
+
+        # Saludos siempre son validos
+        greetings = ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'saludos', 'hi', 'hello']
+        if any(greeting in message_lower for greeting in greetings):
+            return True
+        
+        tb_keywords = [
+            'tuberculosis', 'tb', 'tos', 'fiebre', 'sudor', 'peso', 'respirar',
+            'cita', 'control', 'tratamiento', 'medicamento', 'pastilla',
+            'agendar', 'cancelar', 'reprogramar', 'cuando', 'cuándo',
+            'salud', 'síntoma', 'dolor', 'pecho', 'sangre'
+        ]
+
+        if any(keyword in message_lower for keyword in tb_keywords):
+            return True
+
+        if len(message.strip()) < 20 and "?" in message:
+            return True
+        
+        out_of_context_keywords = [
+            'hipotenusa', 'matemática', 'trigonometría', 'física', 'química',
+            'odontología', 'dentista', 'muela', 'diente',
+            'embarazo', 'ginecología', 'pediatría', 'niño',
+            'fútbol', 'deporte', 'política', 'clima'
+        ]
+
+        if any(keyword in message_lower for keyword in out_of_context_keywords):
+            logger.info("🎯 Mensaje identificado como fuera de contexto por palabras clave")
+            return False
+        
+        # ⚠️ Mensajes largos sin palabras clave (probablemente fuera de contexto)
+        if len(message.strip()) > 100:
+            return False
+        
+        return True
+    
+    def _is_valid_response(self, response: str) -> bool:
+        """
+        Valida que la respuesta generada sea coherente
+
+        Detecta:
+        - Fechas inventadas (ej: "140032/10/2025")
+        - Nombres incorrectos repetidos (ej: Diego Diego Diego)
+        - Numeros absurdos (ej: "1491/20759/2010")
+        - Palabras inventadas (ej: "TUBERACION")
+
+        Returns:
+            True si la respuesta es valida
+        """
+
+        # Detectar fechas absurdas (dias > 31, meses > 12)
+        import re
+        date_pattern = r'\d{2,}/\d{2,}/\d{2,}'
+        dates = re.findall(date_pattern, response)
+
+        for date_str in dates:
+            parts = date_str.split('/')
+            try:
+                day = int(parts[0])
+                month = int(parts[1]) if len(parts) > 1 else 0
+                year = int(parts[2])
+                if day > 31 or month > 12 or year > 2100 or day > 1000:
+                    logger.warning(f"⚠️ Fecha absurda detectada: {date_str}")
+                    return False
+            except:
+                logger.warning(f"⚠️ Fecha inválida detectada: {date_str}")
+                pass
+
+        # Detectar palabras repetidas 3 veces seguidas
+        words = response.split()
+        for i in range(len(words) - 2):
+            if words[i] == words[i+1] == words[i+2]:
+                logger.warning(f"⚠️ Palabra repetida detectada: {words[i]}")
+                return False
+            
+        # Detectar palabras inventadas conocidas
+        invalid_words = ['tuberación', 'tuberculos', 'cañadi', 'carmi']
+        if any(word in response.lower() for word in invalid_words):
+            logger.warning(f"⚠️ Palabra inventada detectada")
+            return False      
+
+        # Respuesta demasiado larga (indica generacion descontrolada)
+        if len(response) > 400:
+            logger.warning(f"⚠️ Respuesta demasiado larga detectada")
+            return False
+
+        return True
+
     def detect_action(self, message: str, conversation: Conversation) -> Optional[ActionIntent]:
         """
         Detecta si el mensaje del usuario tiene una intención de acción.
@@ -210,62 +326,143 @@ class AIService:
     
     # ===== Métodos Privados =====
     
-    def _build_prompt(self, conversation: Conversation) -> str:
+    async def _build_prompt(
+        self,
+        conversation: Conversation,
+        user_id: str
+    ) -> str:
         """
-        Construye el prompt completo para el modelo.
+        Construye el prompt con FORMATO ESTRUCTURADO.
         
-        CRÍTICO: Este formato DEBE coincidir EXACTAMENTE con el usado en entrenamiento.
+        NUEVO FORMATO alineado con el modelo fine-tuned estructurado:
+        <SYS>
+        ... instrucciones del sistema ...
+        </SYS>
         
-        Estructura (igual que tuberculosis_conversations_v2.json):
-        1. Contexto del sistema con reglas embebidas
-        2. Estado del paciente (REGISTRADO/NO REGISTRADO)
-        3. Información de cita si está registrado
-        4. Historial de conversación
-        5. Indicador "Asistente:" para generar respuesta
+        <DATA>
+        Paciente_registrado = True/False
+        Nombre = "Nombre Real" o None
+        Citas = [...] o []
+        Ultima_visita = "fecha" o None
+        </DATA>
+        
+        <USER>: mensaje
+        <ASSISTANT>:
         
         Args:
             conversation: Conversación con historial
+            user_id: ID del usuario (teléfono) para consultar BD
         
         Returns:
-            Prompt formateado EXACTAMENTE como en entrenamiento
+            Prompt estructurado completo
         """
-        # 1. Sistema + Reglas (igual que dataset)
-        prompt = (
-            "Eres un asistente virtual EXCLUSIVO del servicio de Tuberculosis "
-            f"del centro de salud {settings.medical_center_name}.\n\n"
-            "REGLAS IMPORTANTES:\n"
-            "1. SOLO atiendes consultas sobre TUBERCULOSIS\n"
-            "2. Máximo 2 oraciones por respuesta\n"
-            "3. Usa el nombre del paciente si lo conoces\n"
-            "4. Sé profesional y empático\n"
-            "5. Si preguntan por otro servicio, redirige amablemente\n\n"
-        )
+        # 1. BLOQUE <SYS> - Instrucciones del sistema
+        system_block = f"""<SYS>
+Eres un asistente virtual especializado SOLO en Tuberculosis del centro de salud {settings.medical_center_name}.
+Responde solo con información basada en los datos proporcionados en <DATA>.
+SI NO hay datos explícitos, debes responder: "No tengo esa información registrada".
+NUNCA inventes nombres, fechas o información que no esté en <DATA>.
+Máximo 2 oraciones por respuesta.
+Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo consultas sobre Tuberculosis".
+</SYS>"""
         
-        # 2. Estado del paciente
-        # TODO: Cuando implementes la BD, aquí verificas si está registrado
-        # Por ahora, asume NO REGISTRADO
-        patient_registered = False  # Obtener de BD en el futuro
+        # 2. BLOQUE <DATA> - Consultar paciente en BD
+        patient_data = None
+        patient_registered = False
         
-        if patient_registered:
-            # Si está registrado, incluir info de cita (obtener de BD)
-            prompt += "Paciente REGISTRADO\n"
-            prompt += "Próxima cita: [FECHA] a las [HORA]\n\n"
+        if self.patient_service:
+            try:
+                patient_registered, patient_data = await self.patient_service.verify_patient(
+                    phone_number=user_id
+                )
+                logger.info(f"📊 Paciente en BD: {patient_registered}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error consultando BD: {e}")
+        
+        # Construir bloque <DATA> estructurado
+        data_lines = []
+        data_lines.append(f"Paciente_registrado = {patient_registered}")
+        
+        if patient_registered and patient_data:
+            nombre = patient_data.get('nombre', 'N/A')
+            data_lines.append(f'Nombre = "{nombre}"')
+            logger.info(f"📊 Nombre del paciente: {nombre}")
+            
+            # Obtener próxima cita
+            proxima_cita = patient_data.get('proxima_cita')
+            if proxima_cita and isinstance(proxima_cita, dict):
+                logger.info(f"📊 Próxima cita encontrada: {proxima_cita}")
+                fecha = proxima_cita.get('fecha', 'N/A')
+                hora = proxima_cita.get('hora', 'N/A')
+                estado = proxima_cita.get('estado', 'Programado')
+                logger.info(f"📊 Próxima cita - Fecha: {fecha}, Hora: {hora}, Estado: {estado}")
+                data_lines.append(f'Citas = [{{fecha: "{fecha}", hora: "{hora}", estado: "{estado}"}}]')
+            else:
+                data_lines.append("Citas = []")
+                logger.info("📊 Sin próximas citas encontradas")
+            
+            # Última visita (si está disponible)
+            ultima_visita = patient_data.get('ultima_visita')
+            if ultima_visita:
+                logger.info(f"📊 Última visita: {ultima_visita}")
+                data_lines.append(f'Ultima_visita = "{ultima_visita}"')
+            else:
+                logger.info("📊 Sin última visita registrada")
+                data_lines.append("Ultima_visita = None")
         else:
-            prompt += "Paciente NO REGISTRADO\n\n"
+            # Paciente NO registrado
+            data_lines.append("Nombre = None")
+            data_lines.append("Citas = []")
+            data_lines.append("Ultima_visita = None")
+            logger.info("📊 Paciente no registrado, datos por defecto en <DATA>")
         
-        # 3. Historial de conversación (últimos N mensajes)
-        recent_messages = conversation.get_recent_messages(
-            limit=settings.max_conversation_history
-        )
+        data_block = "\n".join(data_lines)
+        logger.info(f"📊 Bloque <DATA> construido:\n{data_block}")
         
-        for msg in recent_messages:
-            role_name = "Paciente" if msg.role == MessageRole.USER else "Asistente"
-            prompt += f"{role_name}: {msg.content}\n"
-        
-        # 4. Indicador de respuesta (igual que dataset)
-        prompt += "Asistente:"
+        # 3. HISTORIAL - Solo último mensaje del usuario (el actual)
+        recent_messages = conversation.get_recent_messages(limit=10)
+        logger.info(f"📊 Mensajes recientes obtenidos: {len(recent_messages)}")
 
-        logger.debug(f"📝 Prompt construido (primeros 500 chars):\n{prompt[:500]}...")
+        # Filtrar mensajes válidos (sin corrupción)
+        valid_messages = []
+        for msg in recent_messages:
+            # Saltar mensajes corruptos
+            if any(word in msg.content.lower() for word in ['tuberación', 'tuberculos', 'diego', '14003']):
+                logger.warning(f"⚠️ Mensaje corrupto saltado: {msg.content[:50]}")
+                continue
+            
+            # Saltar mensajes muy largos
+            if len(msg.content) > 200:
+                logger.warning(f"⚠️ Mensaje muy largo saltado")
+                continue
+            
+            valid_messages.append(msg)
+        
+        # SOLO tomar el ÚLTIMO mensaje del usuario (el actual)
+        last_user_message = None
+        for msg in reversed(valid_messages):
+            if msg.role == MessageRole.USER:
+                last_user_message = msg.content
+                break
+        
+        if not last_user_message and valid_messages:
+            last_user_message = valid_messages[-1].content
+        
+        if not last_user_message:
+            last_user_message = "Hola"  # Fallback
+        
+        # 4. CONSTRUIR PROMPT COMPLETO
+        prompt = f"""{system_block}
+
+<DATA>
+{data_block}
+</DATA>
+
+<USER>: {last_user_message}
+<ASSISTANT>:"""
+        
+        logger.info(f"� Prompt estructurado construido (longitud: {len(prompt)} chars)")
+        logger.info(f"Prompt completo:\n{prompt}")
         
         return prompt
     
@@ -276,10 +473,10 @@ class AIService:
         temperature: float
     ) -> str:
         """
-        Genera texto usando el modelo de lenguaje.
+        Genera texto usando el modelo de lenguaje con formato estructurado.
         
         Args:
-            prompt: Prompt completo
+            prompt: Prompt completo con formato <SYS>, <DATA>, <USER>
             max_tokens: Máximo de tokens a generar
             temperature: Temperatura del modelo
         
@@ -288,45 +485,60 @@ class AIService:
         """
         import torch
         
-        # Tokenizar el prompt
-        inputs = self.tokenizer.encode(
+        # Tokenizar el prompt con attention_mask
+        inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
             max_length=512,
-            truncation=True
-        ).to(self.device)
+            truncation=True,
+            padding=True,
+            return_attention_mask=True  # ✅ CRÍTICO: Evita warnings
+        )
+
+        # Mover a dispositivo
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         # Obtener la longitud del prompt para extraer solo lo nuevo
-        prompt_length = inputs.shape[1]
+        prompt_length = inputs['input_ids'].shape[1]
+        
+        # Agregar tokens de detencion
+        stop_tokens = [
+            self.tokenizer.encode("\n\n", add_special_tokens=False)[0],
+            self.tokenizer.encode("\n:", add_special_tokens=False)[0],
+            self.tokenizer.encode("<USER>", add_special_tokens=False)[0],
+            self.tokenizer.eos_token_id,
+        ]
         
         # Generar con el modelo
         with torch.no_grad():
             outputs = self.model.generate(
-                inputs,
-                max_new_tokens=max_tokens,
+                input_ids = inputs['input_ids'],
+                attention_mask = inputs['attention_mask'],
+                max_new_tokens=min(max_tokens, 80),
                 temperature=temperature,
                 do_sample=True,
                 top_p=0.9,
                 top_k=50,
                 pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=stop_tokens,
                 repetition_penalty=1.2,  # Penaliza repeticiones
-                no_repeat_ngram_size=3  # Evita n-gramas repetidos
+                no_repeat_ngram_size=3,  # Evita n-gramas repetidos
+                early_stopping=True 
             )
         
         # Decodificar SOLO los tokens nuevos (no el prompt completo)
         generated_tokens = outputs[0][prompt_length:]
         response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-        logger.debug(f"📝 Respuesta bruta del modelo: {response[:100]}...")
+        logger.info(f"📝 Respuesta bruta del modelo: {response}")
         
         # Limpiar la respuesta
         response = self._clean_response(response)
 
         if not response or len(response.strip()) < 5:
-            logger.warning("⚠️ Respuesta vacía o muy corta, usando respuesta por defecto")
+            logger.info("⚠️ Respuesta vacía o muy corta, usando respuesta por defecto")
             # Generar respuesta contextual basada en el último mensaje
-            last_message = prompt.split("Usuario:")[-1].strip() if "Usuario:" in prompt else ""
-            response = self._get_fallback_response(last_message)
+            return "No tengo esta información registrada. ¿En qué más puedo ayudarte?"
         
         return response
     
@@ -334,46 +546,70 @@ class AIService:
         """
         Limpia la respuesta del modelo.
         
-        - Remueve repeticiones
-        - Trunca en puntos de corte naturales
-        - Remueve caracteres extraños
-        
-        Args:
-            response: Respuesta sin limpiar
-        
-        Returns:
-            Respuesta limpia
+        MEJORAS:
+        1. Trunca después de 2 oraciones
+        2. Remueve conversaciones ficticias
+        3. Valida que sea una respuesta única
         """
-        # 1. Remover prefijos comunes que el modelo puede generar 
-        prefixes_to_remove = ["Asistente:", "Assistant:", "Bot:", "AI:"]
-        for prefix in prefixes_to_remove:
+        if not response:
+            return ""
+        
+        # 1. Remover prefijos incorrectos
+        prefixes = ["<ASSISTANT>:", "Asistente:", "Assistant:", ":"]
+        for prefix in prefixes:
             if response.startswith(prefix):
                 response = response[len(prefix):].strip()
-
-        # 2. Truncar en el primer salto de línea doble (fin de párrafo)
-        if "\n\n" in response:
-            response = response.split("\n\n")[0]
-
-        # 3. Truncar en "Usuario:" si aparece (error del modelo)
-        if "Usuario:" in response:
-            response = response.split("Usuario:")[0]
-
-        # 4. Truncas en "User:" tambien
-        if "User:" in response:
-            response = response.split("User:")[0]
         
-        # 5. Limpiar espacios extras
+        # 2. ✅ TRUNCAR en marcadores de conversación ficticia
+        stop_markers = [
+            "\n\n",           # Doble salto de línea
+            "\n:",            # Nuevo diálogo
+            "\n<USER>:",      # Nuevo usuario
+            "\n<ASSISTANT>:", # Nuevo asistente
+            "Paciente:",      # Diálogo del paciente
+            "Usuario:",       # Diálogo del usuario
+        ]
+        
+        for marker in stop_markers:
+            if marker in response:
+                response = response.split(marker)[0]
+                logger.debug(f"🔪 Truncado en marcador: {marker}")
+        
+        # 3. ✅ LIMITAR A 2 ORACIONES
+        sentences = self._split_sentences(response)
+        
+        if len(sentences) > 2:
+            logger.warning(f"⚠️ Respuesta tenía {len(sentences)} oraciones, truncando a 2")
+            response = ". ".join(sentences[:2]) + "."
+        
+        # 4. Limpiar espacios múltiples
         response = " ".join(response.split())
         
-        # 6. Asegurar que termina con puntuacion
+        # 5. Asegurar que termina con puntuación
         if response and response[-1] not in '.!?':
-            # Truncar en la ultima frase completa
-            for punct in ['.', '!', '?']:
-                if punct in response:
-                    response = response[:response.rfind(punct)+1]
-                    break
-
+            response += "."
+        
         return response.strip()
+
+    def _split_sentences(self, text: str) -> list[str]:
+        """
+        Divide texto en oraciones.
+
+        Detecta fin de oracion por:
+        - Punto seguido de espacio y mayuscula
+        - Signos de interrogacion o exclamacion
+        """ 
+
+        import re
+        # Patrón: Punto/Interrogación/Exclamación + Espacio + Mayúscula
+        pattern = r'(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ])'
+        
+        sentences = re.split(pattern, text)
+        
+        # Limpiar oraciones vacías
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        return sentences
     
     def _get_fallback_response(self, last_message: str) -> str:
         """

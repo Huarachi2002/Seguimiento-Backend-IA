@@ -80,9 +80,11 @@ async def chat_endpoint(
         # Verificar rate limiting
         redis = get_redis()
         await verify_rate_limit(request.user_id, redis)
+        logger.info(f"✅ Rate limit verificado para usuario: {request.user_id}")
         
         # Obtener el último mensaje del usuario
         last_message = request.messages[-1]
+        logger.info(f"📝 Último mensaje del usuario: {last_message.content[:50]}...")
         
         if not last_message.content.strip():
             raise HTTPException(
@@ -90,13 +92,15 @@ async def chat_endpoint(
                 detail="El mensaje no puede estar vacío"
             )
         
-        # Procesar el mensaje (ahora usa Redis internamente)
-        response_text, action_data = conversation_service.process_user_message(
+        # Procesar el mensaje (ahora consulta BD para verificar paciente)
+        response_text, action_data = await conversation_service.process_user_message(
             user_id=request.user_id,
             message_content=last_message.content,
             max_tokens=request.max_tokens,
             temperature=request.temperature
         )
+
+        logger.info(f"🤖 Respuesta generada: {response_text}")
         
         # Obtener la conversación para el ID
         conversation = conversation_service.get_or_create_conversation(request.user_id)
@@ -215,4 +219,52 @@ async def close_conversation(user_id: str):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No se encontró conversación activa para {user_id}"
+        )
+    
+
+@router.delete("/{user_id}/reset", status_code=200)
+async def reset_conversation(
+    user_id: str,
+    conversation_service: ConversationService = Depends(get_conversation_service)
+):
+    """
+    Resetea la conversación de un usuario (limpia Redis).
+    
+    Útil cuando:
+    - El historial está corrupto (mensajes mal formateados)
+    - Se quiere empezar desde cero
+    - Debugging/testing
+    
+    Args:
+        user_id: ID del usuario
+    
+    Returns:
+        Confirmación de eliminación
+    
+    Example:
+        DELETE http://localhost:8000/api/v1/chat/76023033/reset
+    """
+    logger.info(f"🗑️ Reseteando conversación para: {user_id}")
+    
+    try:
+        deleted = conversation_service.delete_conversation(user_id)
+        
+        if deleted:
+            return {
+                "message": f"Conversación de {user_id} eliminada exitosamente",
+                "user_id": user_id,
+                "status": "reset"
+            }
+        
+        return {
+            "message": f"No había conversación activa para {user_id}",
+            "user_id": user_id,
+            "status": "not_found"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error reseteando conversación: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al resetear conversación: {str(e)}"
         )

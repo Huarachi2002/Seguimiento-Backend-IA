@@ -62,6 +62,7 @@ class ConversationService:
             Conversación del usuario
         """
         # Intentar obtener de Redis
+        logger.info(f"🔍 Buscando conversación en Redis para user_id: {user_id}")
         conversation = self.repo.get(user_id)
         
         if conversation is None:
@@ -97,17 +98,80 @@ class ConversationService:
         Returns:
             Mensaje creado
         """
+        # 1. Obtener conversacion existente (O crear si es primera vez)
         conversation = self.get_or_create_conversation(user_id)
-        message = conversation.add_message(role=role, content=content)
         
+        # 2. Limpiar solo el contenido del nuevo mensaje
+        content_cleaned = self._clean_menssage_content(content)
+
+        # 3. Agregar mensaje limpio al historial existente
+        message = conversation.add_message(role=role, content=content_cleaned)
+
         # Persistir en Redis
         self.repo.save(conversation)
         
-        logger.info(f"💬 Mensaje añadido a Redis: {role.value} | {content[:50]}...")
+        logger.info(f"💬 Mensaje añadido a Redis: {role.value} | {content_cleaned}...")
         
         return message
     
-    def process_user_message(
+    def _clean_menssage_content(self, content: str) -> str:
+        """
+        Limpia el contenido de un mensaje individual.
+        
+        No toca otros mensajes, solo limpia este texto.
+
+        Limpia:
+        - Prefijos incorrectos ("Asistente:", "User:", etc.)
+        - Múltiples espacios
+        - Saltos de línea dobles
+        - Límite de longitud
+
+        Args:
+            content: Texto SIN LIMPIAR
+        
+        Returns:
+            Texto LIMPIO
+        """
+
+        if not content:
+            return ""
+        
+        # 1. Remover prefijos incorrectos que el modelo puede generar
+        prefixes = [
+            "Asistente:", "Assistant:", "Asistencia:",
+            "Paciente:", "Pacientes:", "User:", "Usuario:"
+        ]
+
+        for prefix in prefixes:
+            if content.startswith(prefix):
+                content = content[len(prefix):].strip()
+
+        # 2. Truncar en saltos de linea dobles
+        if  "\n\n" in content:
+            content = content.split("\n\n")[0]
+
+        # 3. Truncar si aparece otro rol dentro del texto
+        for delimiter in ["Paciente:", "Asistente:", "User:", "Assistant:"]:
+            if delimiter in content:
+                content = content.split(delimiter)[0]
+
+        # 4. Limpiar espacios multiples
+        content = " ".join(content.split())
+
+        # 5. Limitar longitud (ej. 500 caracteres)
+        MAX_LENGTH = 500
+        if len(content) > MAX_LENGTH:
+            logger.warning(f"⚠️ Mensaje muy largo ({len(content)} chars), truncando a {MAX_LENGTH}")
+            content = content[:MAX_LENGTH] + "..."
+
+        # 6. Asegurar que no este vacio
+        if len(content.strip()) == 0:
+            logger.warning(f"⚠️ Mensaje muy corto después de limpiar: '{content}'")
+            return "..."  # Placeholder para evitar mensajes vacíos
+        
+        return content.strip()
+    
+    async def process_user_message(
         self,
         user_id: str,
         message_content: str,
@@ -120,7 +184,7 @@ class ConversationService:
         Este es el método principal del servicio. Realiza:
         1. Añade el mensaje del usuario a la conversación
         2. Detecta intenciones/acciones
-        3. Genera respuesta con IA
+        3. Genera respuesta con IA (ahora consulta BD)
         4. Añade la respuesta a la conversación
         
         Args:
@@ -140,9 +204,11 @@ class ConversationService:
             role=MessageRole.USER,
             content=message_content
         )
+        logger.info(f"✅ Mensaje del usuario añadido")
         
         # 2. Obtener conversación
         conversation = self.get_or_create_conversation(user_id)
+        logger.info(f"📚 Conversación obtenida: {conversation.conversation_id}")
         
         # 3. Detectar acciones/intenciones
         action = self.ai_service.detect_action(message_content, conversation)
@@ -154,12 +220,15 @@ class ConversationService:
             }
             logger.info(f"🎯 Acción detectada con confianza: {action.action}")
         
-        # 4. Generar respuesta con IA
-        response = self.ai_service.generate_response(
+        # 4. Generar respuesta con IA (ahora consulta BD)
+        response = await self.ai_service.generate_response(
             conversation=conversation,
+            user_id=user_id,  # Pasa el user_id para consultar BD
             max_tokens=max_tokens,
             temperature=temperature
         )
+
+        logger.info(f"🤖 Respuesta generada: {response}")
         
         # 5. Añadir respuesta del asistente
         self.add_message(

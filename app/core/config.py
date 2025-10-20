@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     redis_password: str | None = None
     session_expire_time: int = 3600  # 1 hora
     
+    # ===== Configuración de Seguimiento Backend =====
+    seguimiento_service_url: str = "http://localhost:3001"
+    seguimiento_timeout: int = 10  # segundos
+    
     # ===== Configuración de N8N =====
     n8n_webhook_url: str = "http://localhost:5678/webhook/whatsapp-response"
     n8n_api_key: str | None = None

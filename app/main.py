@@ -114,14 +114,35 @@ async def lifespan(app: FastAPI):
         model, tokenizer, device = ModelLoader.load_model()
         logger.info(f"✅ Modelo cargado en: {device}")
         
-        # 3. Inicializar servicios
+        # 3. Inicializar Patient Service (para consultar BD)
+        logger.info("🏥 Inicializando servicio de pacientes...")
+        from app.services.patient_service import get_patient_service
+        from app.infrastructure.http import get_seguimiento_client
+        
+        # Verificar conectividad con Seguimiento
+        seguimiento_client = get_seguimiento_client()
+        is_seguimiento_available = await seguimiento_client.health_check()
+        
+        if is_seguimiento_available:
+            logger.info(f"✅ Servicio Seguimiento conectado: {settings.seguimiento_service_url}")
+            patient_service = get_patient_service()
+        else:
+            logger.warning(f"⚠️ Servicio Seguimiento no disponible: {settings.seguimiento_service_url}")
+            logger.warning("⚠️ Continuando sin consultas a BD - modo degradado")
+            patient_service = None
+        
+        # 4. Inicializar servicios de IA
         global ai_service, conversation_service
         
-        logger.info("⚙️ Inicializando servicios...")
-        ai_service = AIService(model=model, tokenizer=tokenizer, device=device)
+        logger.info("⚙️ Inicializando servicios de IA...")
+        ai_service = AIService(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            patient_service=patient_service  # Inyectar servicio de pacientes
+        )
         
-        # ConversationService ahora se inyecta vía dependencies
-        # pero podemos pre-calentar el servicio si queremos
+        # ConversationService se inyecta vía dependencies
         logger.info("✅ Servicios inicializados")
         
         # 4. TODO: Conectar a base de datos

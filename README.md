@@ -100,6 +100,9 @@ python -m app.main
 
 # O con uvicorn directamente
 uvicorn app.main:app --reload --port 8000
+
+# O de la siguiente manera
+python -m app.main:app --reload
 ```
 
 ### 5. Verificar
