@@ -249,11 +249,27 @@ class AIService:
         message_lower = message.lower()
         
         # Detección de intención de agendar
-        if any(word in message_lower for word in ['agendar', 'programar', 'cita nueva', 'reservar']):
+        agendar_keywords = ['agendar', 'programar', 'cita nueva', 'reservar', 'quiero cita']
+        if any(word in message_lower for word in agendar_keywords):
             logger.info("🎯 Acción detectada: schedule_appointment")
+
+            # Extraer datos del mensaje
+            extracted_data = self._extract_appointment_data(message)
+            logger.info(f"📊 Datos extraídos para agendar: {extracted_data}")
+            # Determinar que datos faltan
+            missing_fields = []
+            if not extracted_data.get("fecha"):
+                missing_fields.append("fecha")
+            if not extracted_data.get("hora"):
+                missing_fields.append("hora")
+
             return ActionIntent(
                 action="schedule_appointment",
-                params={"status": "collecting_info"},
+                params={
+                    "status": "collecting_info" if missing_fields else "ready",
+                    "extracted_data": extracted_data,
+                    "missing_fields": missing_fields 
+                    },
                 confidence=0.9
             )
         
@@ -296,6 +312,143 @@ class AIService:
         
         return None
     
+    def _extract_appointment_data(self, message: str) -> dict:
+        """
+        Extrae fecha, hora y motivo del mensaje del usuario
+
+        Ejemplo: 
+        - "Quiero agendar para el lunes 25 a las 10:00"
+        - "Agendar cita mañana 14:40"
+        - "Quiero cita el 2025-11-20 por la mañana"
+
+        Returns:
+            dict con keys: fecha, hora, motivo
+        """
+
+        import re
+        from datetime import datetime, timedelta
+
+        extracted = {
+            "fecha": None,
+            "hora": None,
+            "motivo": None
+        }
+
+        message_lower = message.lower()
+        logger.info(f"📊 Extrayendo datos de mensaje: {message_lower}")
+
+        # Extraer fecha: 2025-10-20T04:00:00.000Z
+        fecha_iso = re.search(r'(\d{2}-\d{2}-\d{2})', message_lower)
+        if fecha_iso:
+            extracted["fecha"] = fecha_iso.group(0)
+            logger.info(f"📊 Fecha extraída (ISO): {extracted['fecha']}")
+        
+        # Patron: 2025-10-20T04:00:00.000Z
+        fecha_slash = re.search(r'(\d{4}/\d{2}/\d{2})', message_lower)
+        if fecha_slash and not extracted["fecha"]:
+            fecha_str = fecha_slash.group(0)
+            logger.info(f"📊 Fecha extraída (Slash): {extracted['fecha']}")
+            try:
+                # convertir a formato ISO
+                if '/' in fecha_str:
+                    parts: fecha_str.split('/')
+                else:
+                    parts = fecha_str.split('-')
+                dia = int(parts[0])
+                mes = int(parts[1])
+                anio = int(parts[2])
+
+                if anio < 100:
+                    anio += 2000  # Asumir siglo 2000
+
+                fecha = datetime(anio, mes, dia)
+                extracted["fecha"] = f"{anio}-{mes:02d}-{dia:02d}T00:00:00.000Z"
+                logger.info(f"📊 Fecha extraída (ISO): {extracted['fecha']}")
+            except:
+                pass
+
+        # Palabras clave temporales
+        if not extracted['fecha']:
+            hoy = datetime.now()
+
+            if any(word in message_lower for word in ['hoy', 'hoi']):
+                extracted['fecha'] = hoy.strftime("%Y-%m-%dT00:00:00.000Z")
+                logger.info(f"📊 Fecha extraída (Hoy): {extracted['fecha']}")
+
+            elif any(word in message_lower for word in ['mañana', 'manana']):
+                manana = hoy + timedelta(days=1)
+                extracted['fecha'] = manana.strftime("%Y-%m-%dT00:00:00.000Z")
+                logger.info(f"📊 Fecha extraída (Mañana): {extracted['fecha']}")
+
+            elif 'pasado mañana' in message_lower:
+                pasado_manana = hoy + timedelta(days=2)
+                extracted['fecha'] = pasado_manana.strftime("%Y-%m-%dT00:00:00.000Z")
+                logger.info(f"📊 Fecha extraída (Pasado Mañana): {extracted['fecha']}")
+
+            dias_semana = {
+                'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2,
+                'jueves': 3, 'viernes': 4, 'sábado': 5, 'sabado': 5, 'domingo': 6
+            }
+
+            for dia_nombre, dia_num in dias_semana.items():
+                if dia_nombre in message_lower:
+                    dias_a_sumar = (dia_num - hoy.weekday() + 7) % 7
+                    if dias_a_sumar == 0:
+                        dias_a_sumar = 7  # Próximo semana
+                    fecha_dia = hoy + timedelta(days=dias_a_sumar)
+                    extracted['fecha'] = fecha_dia.strftime("%Y-%m-%dT00:00:00.000Z")
+                    logger.info(f"📊 Fecha extraída ({dia_nombre.capitalize()}): {extracted['fecha']}")
+                    break
+        # Extraer hora: formato 04:00:00.000Z o 14:30
+        hora_match = re.search(r'(\d{1,2}:\d{2}(?::\d{2}(?:\.\d{3}Z)?)?)', message_lower)
+        if hora_match:
+            hora = int(hora_match.group(1).split(':')[0])
+            minuto = int(hora_match.group(1).split(':')[1])
+            periodo = 'AM' if hora < 12 else 'PM'
+            logger.info(f"📊 Hora extraída: {hora}:{minuto:02d} {periodo}")
+
+            #Convertir a 24h si es am/pm
+            if 'pm' in message_lower and hora < 12:
+                hora += 12
+            elif 'am' in message_lower and hora == 12:
+                hora = 0
+
+            extracted['hora'] = f"{hora:02d}:{minuto:02d}:00.000Z"
+            logger.info(f"📊 Hora extraída (24h): {extracted['hora']}")
+
+        # Horarios textuales
+        horarios_text = {
+            'mañana': '09:00:00.000Z',
+            'tarde': '15:00:00.000Z',
+            'noche': '19:00:00.000Z',
+        }
+
+        if not extracted["hora"]:
+            for texto, hora in horarios_text.items():
+                if texto in message_lower:
+                    extracted['hora'] = hora
+                    logger.info(f"📊 Hora extraída (Texto): {extracted['hora']}")
+                    break
+        
+        # Extraccion de motivo
+
+        motivos_keywords = {
+            'control': 'Control de rutina',
+            'revision': 'Revision medica',
+            'sintomas': 'Consulta por sintomas',
+            'medicacion': 'Consulta de medicacion',
+            'resultados': 'Consulta de resultados',
+            'emergencia': 'Emergencia'
+        }
+
+        for keyword, motivo in motivos_keywords.items():
+            if keyword in message_lower:
+                extracted['motivo'] = motivo
+                logger.info(f"📊 Motivo extraído: {motivo}")
+                break
+
+        return extracted
+
     def extract_structured_data(self, text: str) -> Optional[dict]:
         """
         Extrae datos estructurados (JSON) de la respuesta del modelo.
@@ -375,7 +528,6 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
                 patient_registered, patient_data = await self.patient_service.verify_patient(
                     phone_number=user_id
                 )
-                logger.info(f"📊 Paciente en BD: {patient_registered}")
             except Exception as e:
                 logger.warning(f"⚠️ Error consultando BD: {e}")
         
@@ -386,17 +538,18 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
         if patient_registered and patient_data:
             nombre = patient_data.get('nombre', 'N/A')
             data_lines.append(f'Nombre = "{nombre}"')
-            logger.info(f"📊 Nombre del paciente: {nombre}")
             
             # Obtener próxima cita
             proxima_cita = patient_data.get('proxima_cita')
             if proxima_cita and isinstance(proxima_cita, dict):
                 logger.info(f"📊 Próxima cita encontrada: {proxima_cita}")
-                fecha = proxima_cita.get('fecha', 'N/A')
-                hora = proxima_cita.get('hora', 'N/A')
-                estado = proxima_cita.get('estado', 'Programado')
-                logger.info(f"📊 Próxima cita - Fecha: {fecha}, Hora: {hora}, Estado: {estado}")
-                data_lines.append(f'Citas = [{{fecha: "{fecha}", hora: "{hora}", estado: "{estado}"}}]')
+                fecha_programada = proxima_cita.get('fecha_programada', 'N/A')
+                fecha = fecha_programada.split('T')[0] if 'T' in fecha_programada else fecha_programada
+                hora = fecha_programada.split('T')[1].split('.')[0] if 'T' in fecha_programada else 'N/A'
+                estado = proxima_cita.get('estado')
+                estado_desc = estado.get('descripcion', 'N/A') if estado else 'N/A'
+                logger.info(f"📊 Próxima cita - Fecha: {fecha}, Hora: {hora}, Estado: {estado_desc}")
+                data_lines.append(f'Citas = [{{fecha: "{fecha}", hora: "{hora}", estado: "{estado_desc}"}}]')
             else:
                 data_lines.append("Citas = []")
                 logger.info("📊 Sin próximas citas encontradas")
@@ -437,22 +590,50 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
                 continue
             
             valid_messages.append(msg)
+
+        # Construir historial
+        history_lines = []
+
+        if len(valid_messages) > 1:
+            # Tomar todos EXCEPTO el ultimo
+            for msg in valid_messages[:-1]:
+                if msg.role == MessageRole.USER:
+                    history_lines.append(f"<USER>: {msg.content}")
+                elif msg.role == MessageRole.ASSISTANT:
+                    history_lines.append(f"<ASSISTANT>: {msg.content}")
+        history_block = "\n".join(history_lines) if history_lines else ""
         
-        # SOLO tomar el ÚLTIMO mensaje del usuario (el actual)
-        last_user_message = None
-        for msg in reversed(valid_messages):
-            if msg.role == MessageRole.USER:
-                last_user_message = msg.content
-                break
-        
-        if not last_user_message and valid_messages:
-            last_user_message = valid_messages[-1].content
+        last_user_message = ""
+        if valid_messages:
+            last_msg = valid_messages[-1]
+            if last_msg.role == MessageRole.USER:
+                last_user_message = last_msg.content
+            else:
+                for msg in reversed(valid_messages):
+                    if msg.role == MessageRole.USER:
+                        last_user_message = msg.content
+                        break
         
         if not last_user_message:
-            last_user_message = "Hola"  # Fallback
-        
-        # 4. CONSTRUIR PROMPT COMPLETO
-        prompt = f"""{system_block}
+            last_user_message = "Hola"
+
+        # 4. Construir prompt completo
+        if history_block:
+            prompt = f"""{system_block}
+
+<DATA>
+{data_block}
+</DATA>
+
+<HISTORY>
+{history_block}
+</HISTORY>
+
+<USER>: {last_user_message}
+<ASSISTANT>:"""
+            
+        else:
+            prompt = f"""{system_block}
 
 <DATA>
 {data_block}
@@ -462,6 +643,7 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
 <ASSISTANT>:"""
         
         logger.info(f"� Prompt estructurado construido (longitud: {len(prompt)} chars)")
+        logger.info(f"Historial incluido: {'Si' if history_block else 'No'} ({len(history_lines)} mensajes)")
         logger.info(f"Prompt completo:\n{prompt}")
         
         return prompt

@@ -612,6 +612,78 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
 
             self._add_example(prompt, completion)
     
+    def generate_conversation_with_history(self, num: int):
+        """ Genera ejemplos Con historial conversacional """
+        print(f"Generando {num} ejemplos: Conversaciones con historial")
+
+        for _ in range(num):
+            nombre = random.choice(self.nombres)
+            fecha = self._generate_random_date()
+            hora = random.choice(["09:00:00", "10:00:00", "14:00:00", "15:00:00"])
+
+            data_block = self._format_data_block(
+                paciente_registrado = True,
+                nombre = nombre,
+                citas = [{"fecha": fecha, "hora": hora, "estado": "Reprogramado"}]
+            )
+
+            history = """<HISTORY>
+<USER>: Hola, quisiera saber mi próxima cita
+<ASSISTANT>: ¡Hola {nombre}! Tu próxima cita es el {fecha} a las {hora}.
+</HISTORY>"""
+        
+        user_message = "¿Y puedo reprogramarla?"
+        
+        prompt = f"""<SYS>
+Eres un asistente virtual especializado SOLO en Tuberculosis...
+</SYS>
+
+<DATA>
+{data_block}
+</DATA>
+
+{history}
+
+<USER>: {user_message}
+<ASSISTANT>:"""
+        
+        completion = "Si, ¿para qué fecha deseas reprogramarla?"
+
+        self._add_example(prompt, completion)
+
+    def generate_agendamiento_citas(self, num: int):
+        """Genera ejemplos de solicitudes de agendamiento"""
+        print(f"🔄 Generando {num} ejemplos: Agendamiento de citas...")
+        
+        mensajes_agendar = [
+            "Quiero agendar una cita",
+            "Necesito programar una cita",
+            "Puedo agendar para mañana?",
+            "Quiero cita para el lunes a las 10",
+            "Agendar cita para el 25 de noviembre",
+            "Necesito cita urgente",
+            "Quiero control el viernes",
+            "Programar cita para la proxima semana"
+        ]
+
+        for _ in range(num):
+            nombre = random.choice(self.nombres)
+            mensaje = random.choice(mensajes_agendar)
+
+            data_block = self._format_data_block(
+                paciente_registrado=True,
+                nombre=nombre,
+                citas=[],
+                ultima_visita=self._generate_random_past_date()
+            )
+
+            prompt = self._create_prompt(data_block, mensaje)
+            completion = "¡Perfecto! Te ayudo a agendar tu cita. ¿Para qué día y hora la prefieres?"
+
+            completion = self._clean_completion(completion)
+            self._add_example(prompt, completion)
+
+
     def generate_all(self):
         """Genera TODOS los ejemplos balanceados"""
         print(f"\n{'='*70}")

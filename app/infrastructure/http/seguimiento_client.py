@@ -189,6 +189,26 @@ class SeguimientoClient:
         return response
     
     # ===== Métodos de Citas =====
+
+    async def update_appointment(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Reprogramar cita para un paciente.
+        
+        Args:
+            payload: Datos de la cita a reprogramar
+        
+        Returns:
+            Datos de la cita reprogramada o None si hay error
+        """
+        logger.info(f"📅 Reprogramando cita para paciente: {payload}")
+        
+        response = await self._request(
+            method="PUT",
+            endpoint="/api/cita/update-assistant",
+            json=payload
+        )
+        
+        return response
     
     async def get_patient_appointments(
         self,

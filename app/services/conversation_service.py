@@ -20,6 +20,7 @@ from app.domain.exceptions import ConversationNotFoundException
 from app.services.ai_service import AIService
 from app.infrastructure.redis import ConversationRepository
 from app.core.logging import get_logger
+from app.services.appointment_service import get_appointment_service
 
 logger = get_logger(__name__)
 
@@ -35,7 +36,8 @@ class ConversationService:
     def __init__(
         self,
         ai_service: AIService,
-        conversation_repo: ConversationRepository
+        conversation_repo: ConversationRepository,
+        appointment_service=None
     ):
         """
         Inicializa el servicio de conversaciones.
@@ -46,6 +48,7 @@ class ConversationService:
         """
         self.ai_service = ai_service
         self.repo = conversation_repo
+        self.appointment_service = appointment_service or get_appointment_service()
         
         logger.info("✅ ConversationService inicializado con Redis")
     
@@ -358,3 +361,107 @@ class ConversationService:
             logger.info(f"🗑️ Conversación eliminada: {user_id}")
         
         return result
+
+    async def process_user_message(
+        self,
+        user_id: str,
+        message_content: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> tuple[str, Optional[dict]]:
+        """
+        Procesa un mensaje del usuario y genera una respuesta.
+        
+        Este es el método principal del servicio. Realiza:
+        1. Añade el mensaje del usuario a la conversación
+        2. Detecta intenciones/acciones
+        3. Genera respuesta con IA (ahora consulta BD)
+        4. Añade la respuesta a la conversación
+        
+        Args:
+            user_id: ID del usuario
+            message_content: Contenido del mensaje del usuario
+            max_tokens: Máximo de tokens para la respuesta
+            temperature: Temperatura del modelo
+        
+        Returns:
+            Tupla (respuesta_generada, acción_detectada)
+        """
+        logger.info(f"🔄 Procesando mensaje de usuario: {user_id}")
+        
+        # 1. Añadir mensaje del usuario
+        self.add_message(
+            user_id=user_id,
+            role=MessageRole.USER,
+            content=message_content
+        )
+        logger.info(f"✅ Mensaje del usuario añadido")
+        
+        # 2. Obtener conversación
+        conversation = self.get_or_create_conversation(user_id)
+        logger.info(f"📚 Conversación obtenida: {conversation.conversation_id}")
+        
+        # 3. Detectar acciones/intenciones
+        action = self.ai_service.detect_action(message_content, conversation)
+        
+        # ======== NUEVO: MANEJAR AGENDAMIENTO DE CITAS ========
+        if action and action.action == "schedule_appointment":
+            logger.info(f"📅 Acción de agendamiento detectada, procesando...")
+
+            # Extraer datos del action
+            extracted_data = action.params.get("extracted_data", {})
+            missing_fields = action.params.get("missing_fields", [])
+
+            # Obtener parient_id del servicio de pacientes
+            from app.services.patient_service import get_patient_service
+            patient_service = get_patient_service()
+
+            patient_registered, patient_data = await patient_service.verify_patient(phone_number=user_id)
+
+            if not patient_registered or not patient_data:
+                logger.info(f"❌ Paciente no registrado, no se puede agendar cita.")
+                response = (
+                    "No puedo agendar una cita porque no estás registrado en el sistema. "
+                    "Por favor, regístrate primero."
+                )
+
+                self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
+                return response, None
+            
+            patient_id = patient_data.get("id")
+
+            # Procesar solicitud de cita
+            response, cita_creada = await self.appointment_service.handle_schedule_request(
+                conversation=conversation,
+                extracted_data=extracted_data,
+                missing_fields=missing_fields,
+                patient_id=str(patient_id)
+            )
+
+            # Añadir respuesta del asistente
+            self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
+            logger.info(f"✅ Respuesta de agendamiento procesada.")
+
+            action_data = {
+                "action": "schedule_appointment",
+                "status": "completed" if cita_creada else "pending",
+                "cita_creada": cita_creada
+            }
+
+            return response, action_data
+        
+        # ======= FLUJO NORMAL: RESPUESTA CON IA =======
+        response = await self.ai_service.generate_response(
+            conversation=conversation,
+            user_id=user_id, 
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+
+        logger.info(f"🤖 Respuesta generada: {response}")
+
+        self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
+
+        action_data = {"action": action.action} if action else None
+
+        return response, action_data
