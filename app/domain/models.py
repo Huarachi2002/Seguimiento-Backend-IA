@@ -75,6 +75,25 @@ class Message:
         """Verifica si el mensaje es del asistente"""
         return self.role == MessageRole.ASSISTANT
 
+class ConversationState(str, Enum):
+    """
+    Estados del flujo conversacional.
+
+    Este enum controla que información estamos esperando del usuario.
+    """
+
+    IDLE = "idle"  # Sin acción en curso
+
+    # Estados de reprogramación de cita
+    RESCHEDULE_WAITING_DATE = "reschedule_waiting_date"
+    RESCHEDULE_WAITING_TIME = "reschedule_waiting_time"
+    RESCHEDULE_CONFIRMING = "reschedule_confirming"
+
+    # Estados de consulta de citas
+    LOOKUP_APPOINTMENT = "lookup_appointment"
+
+    # Estados de cancelación (para futuro)
+    CANCEL_CONFIRMING = "cancel_confirming"
 
 @dataclass
 class Conversation:
@@ -91,6 +110,9 @@ class Conversation:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: Optional[dict] = None
+
+    state: ConversationState = ConversationState.IDLE
+    state_data: dict = field(default_factory=dict)
     
     def add_message(self, role: MessageRole, content: str) -> Message:
         """
@@ -125,6 +147,27 @@ class Conversation:
         self.status = ConversationStatus.CLOSED
         self.updated_at = datetime.now()
 
+    def set_state(self, state: ConversationState, **data):
+        """
+        Cambia el estado de la conversacion
+
+        Args:
+            state: Nuevo estado
+            **data: Datos adicionales para el estado
+        """
+
+        self.state = state
+        self.state_data = data
+        self.updated_at = datetime.now()
+
+    def clear_state(self):
+        """Limpia el estado actual."""
+        self.state = ConversationState.IDLE
+        self.state_data = {}
+
+    def is_in_flow(self) -> bool:
+        """Verifica si hay un flujo activo."""
+        return self.state != ConversationState.IDLE
 
 @dataclass
 class Patient:

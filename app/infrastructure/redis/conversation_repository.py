@@ -67,7 +67,7 @@ class ConversationRepository:
     
     def save(self, conversation: Conversation, ttl: Optional[int] = None) -> bool:
         """
-        Guarda una conversación en Redis.
+        Guarda una conversación en Redis CON ESTADO.
         
         Args:
             conversation: Conversación a guardar
@@ -80,7 +80,7 @@ class ConversationRepository:
             key = self._get_key(conversation.user_id)
             expire_time = ttl or self.ttl
             
-            # Serializar conversación a dict
+            # Serializar conversación a dict (INCLUIR ESTADO)
             conversation_data = {
                 "conversation_id": conversation.conversation_id,
                 "user_id": conversation.user_id,
@@ -97,7 +97,10 @@ class ConversationRepository:
                     }
                     for idx, msg in enumerate(conversation.messages)
                 ],
-                "metadata": conversation.metadata
+                "metadata": conversation.metadata,
+                # ===== GUARDAR ESTADO =====
+                "state": conversation.state.value,
+                "state_data": conversation.state_data
             }
             
             # Guardar en Redis con TTL
@@ -108,13 +111,14 @@ class ConversationRepository:
                 meta_key = self._get_meta_key(conversation.user_id)
                 meta_data = {
                     "last_activity": datetime.now().isoformat(),
-                    "message_count": len(conversation.messages)
+                    "message_count": len(conversation.messages),
+                    "current_state": conversation.state.value
                 }
                 self.redis.set(meta_key, meta_data, expire=expire_time)
                 
                 logger.debug(
                     f"💾 Conversación guardada: {conversation.user_id} "
-                    f"({len(conversation.messages)} mensajes, TTL={expire_time}s)"
+                    f"(Estado: {conversation.state.value}, {len(conversation.messages)} mensajes, TTL={expire_time}s)"
                 )
             
             return success
@@ -125,7 +129,7 @@ class ConversationRepository:
     
     def get(self, user_id: str) -> Optional[Conversation]:
         """
-        Recupera una conversación de Redis.
+        Recupera una conversación de Redis CON ESTADO.
         
         Args:
             user_id: ID del usuario
@@ -162,9 +166,14 @@ class ConversationRepository:
             conversation.updated_at = datetime.fromisoformat(data["updated_at"])
             conversation.metadata = data.get("metadata", {})
             
+            # ===== RESTAURAR ESTADO =====
+            from app.domain.models import ConversationState
+            conversation.state = ConversationState(data.get("state", "idle"))
+            conversation.state_data = data.get("state_data", {})
+            
             logger.debug(
                 f"📖 Conversación recuperada: {user_id} "
-                f"({len(messages)} mensajes)"
+                f"(Estado: {conversation.state.value}, {len(messages)} mensajes)"
             )
             
             return conversation

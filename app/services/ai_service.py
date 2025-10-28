@@ -234,10 +234,9 @@ class AIService:
         """
         Detecta si el mensaje del usuario tiene una intención de acción.
         
-        Ejemplos de acciones:
-        - "Quiero agendar una cita" -> action: schedule_appointment
-        - "Cancelar mi cita" -> action: cancel_appointment
-        - "¿Cuándo es mi próxima cita?" -> action: lookup_appointments
+        Acciones soportadas:
+        - "¿Cuándo es mi próxima cita?" -> action: lookup_appointment
+        - "Quiero cambiar mi cita" -> action: reschedule_appointment
         
         Args:
             message: Mensaje del usuario
@@ -248,15 +247,19 @@ class AIService:
         """
         message_lower = message.lower()
         
-        # Detección de intención de agendar
-        agendar_keywords = ['agendar', 'programar', 'cita nueva', 'reservar', 'quiero cita']
-        if any(word in message_lower for word in agendar_keywords):
-            logger.info("🎯 Acción detectada: schedule_appointment")
+        # ===== DETECCIÓN: REPROGRAMAR CITA (PRIMERO) =====
+        # Verificar primero reprogramar porque "cambiar mi cita" contiene "cita"
+        reschedule_keywords = ['reprogramar', 'cambiar', 'mover cita', 'cambiar cita', 
+                              'otra fecha', 'otro día', 'otro dia', 'modificar cita']
+        
+        if any(word in message_lower for word in reschedule_keywords):
+            logger.info("🎯 Acción detectada: reschedule_appointment")
 
             # Extraer datos del mensaje
             extracted_data = self._extract_appointment_data(message)
-            logger.info(f"📊 Datos extraídos para agendar: {extracted_data}")
-            # Determinar que datos faltan
+            logger.info(f"📊 Datos extraídos para reprogramar: {extracted_data}")
+            
+            # Determinar qué datos faltan
             missing_fields = []
             if not extracted_data.get("fecha"):
                 missing_fields.append("fecha")
@@ -264,50 +267,25 @@ class AIService:
                 missing_fields.append("hora")
 
             return ActionIntent(
-                action="schedule_appointment",
+                action="reschedule_appointment",
                 params={
                     "status": "collecting_info" if missing_fields else "ready",
                     "extracted_data": extracted_data,
                     "missing_fields": missing_fields 
-                    },
+                },
                 confidence=0.9
             )
         
-        # Detección de intención de cancelar
-        if any(word in message_lower for word in ['cancelar', 'anular']):
-            logger.info("🎯 Acción detectada: cancel_appointment")
-            return ActionIntent(
-                action="cancel_appointment",
-                params={"status": "collecting_info"},
-                confidence=0.85
-            )
+        # ===== DETECCIÓN: CONSULTAR PRÓXIMA CITA (SEGUNDO) =====
+        lookup_keywords = ['próxima cita', 'proxima cita', 'mis citas', 'cuándo', 'cuando', 
+                          'qué día', 'que dia', 'mi cita', 'cita programada']
         
-        # Detección de intención de reprogramar
-        if any(word in message_lower for word in ['reprogramar', 'cambiar', 'mover cita']):
-            logger.info("🎯 Acción detectada: reschedule_appointment")
+        if any(word in message_lower for word in lookup_keywords):
+            logger.info("🎯 Acción detectada: lookup_appointment")
             return ActionIntent(
-                action="reschedule_appointment",
-                params={"status": "collecting_info"},
-                confidence=0.85
-            )
-        
-        # Detección de consulta de citas
-        if any(word in message_lower for word in ['próxima cita', 'mis citas', 'cuándo', 'cuando']):
-            logger.info("🎯 Acción detectada: lookup_appointments")
-            return ActionIntent(
-                action="lookup_appointments",
+                action="lookup_appointment",
                 params={},
-                confidence=0.8
-            )
-        
-        # Detección de verificación de identidad
-        if re.search(r'\d{4}', message):  # Si contiene 4 dígitos
-            logger.info("🎯 Acción detectada: verify_patient")
-            digits = re.findall(r'\d{4}', message)[0]
-            return ActionIntent(
-                action="verify_patient",
-                params={"last_four_digits": digits},
-                confidence=0.75
+                confidence=0.9
             )
         
         return None

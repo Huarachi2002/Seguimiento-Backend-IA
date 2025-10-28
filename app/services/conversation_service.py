@@ -14,13 +14,14 @@ Ahora usa Redis para persistencia temporal de conversaciones.
 """
 
 from typing import Optional
-from datetime import datetime
-from app.domain.models import Conversation, Message, MessageRole, ConversationStatus
+from datetime import datetime, timedelta
+from app.domain.models import Conversation, ConversationState, Message, MessageRole, ConversationStatus
 from app.domain.exceptions import ConversationNotFoundException
 from app.services.ai_service import AIService
 from app.infrastructure.redis import ConversationRepository
 from app.core.logging import get_logger
 from app.services.appointment_service import get_appointment_service
+from app.services.reschedule_handlers import RescheduleHandlers
 
 logger = get_logger(__name__)
 
@@ -174,76 +175,6 @@ class ConversationService:
         
         return content.strip()
     
-    async def process_user_message(
-        self,
-        user_id: str,
-        message_content: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None
-    ) -> tuple[str, Optional[dict]]:
-        """
-        Procesa un mensaje del usuario y genera una respuesta.
-        
-        Este es el método principal del servicio. Realiza:
-        1. Añade el mensaje del usuario a la conversación
-        2. Detecta intenciones/acciones
-        3. Genera respuesta con IA (ahora consulta BD)
-        4. Añade la respuesta a la conversación
-        
-        Args:
-            user_id: ID del usuario
-            message_content: Contenido del mensaje del usuario
-            max_tokens: Máximo de tokens para la respuesta
-            temperature: Temperatura del modelo
-        
-        Returns:
-            Tupla (respuesta_generada, acción_detectada)
-        """
-        logger.info(f"🔄 Procesando mensaje de usuario: {user_id}")
-        
-        # 1. Añadir mensaje del usuario
-        self.add_message(
-            user_id=user_id,
-            role=MessageRole.USER,
-            content=message_content
-        )
-        logger.info(f"✅ Mensaje del usuario añadido")
-        
-        # 2. Obtener conversación
-        conversation = self.get_or_create_conversation(user_id)
-        logger.info(f"📚 Conversación obtenida: {conversation.conversation_id}")
-        
-        # 3. Detectar acciones/intenciones
-        action = self.ai_service.detect_action(message_content, conversation)
-        action_data = None
-        if action and action.is_confident():
-            action_data = {
-                "action": action.action,
-                "params": action.params
-            }
-            logger.info(f"🎯 Acción detectada con confianza: {action.action}")
-        
-        # 4. Generar respuesta con IA (ahora consulta BD)
-        response = await self.ai_service.generate_response(
-            conversation=conversation,
-            user_id=user_id,  # Pasa el user_id para consultar BD
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-
-        logger.info(f"🤖 Respuesta generada: {response}")
-        
-        # 5. Añadir respuesta del asistente
-        self.add_message(
-            user_id=user_id,
-            role=MessageRole.ASSISTANT,
-            content=response
-        )
-        
-        logger.info(f"✅ Mensaje procesado exitosamente")
-        
-        return response, action_data
-    
     def get_conversation(self, user_id: str) -> Conversation:
         """
         Obtiene una conversación por user_id.
@@ -370,98 +301,116 @@ class ConversationService:
         temperature: Optional[float] = None
     ) -> tuple[str, Optional[dict]]:
         """
-        Procesa un mensaje del usuario y genera una respuesta.
-        
-        Este es el método principal del servicio. Realiza:
-        1. Añade el mensaje del usuario a la conversación
-        2. Detecta intenciones/acciones
-        3. Genera respuesta con IA (ahora consulta BD)
-        4. Añade la respuesta a la conversación
-        
-        Args:
-            user_id: ID del usuario
-            message_content: Contenido del mensaje del usuario
-            max_tokens: Máximo de tokens para la respuesta
-            temperature: Temperatura del modelo
-        
-        Returns:
-            Tupla (respuesta_generada, acción_detectada)
+        Procesa un mensaje del usuario con CONTROL DE FLUJO
+
+        NUEVO FLUJO:
+        1. Verificar si hay un estado activo
+        2. Si hay estado, procesar segun el flujo controlado
+        3. Si no hay estado, detectar nuevo intencion
+        4. Solo usar modelo si no hay flujo activo
         """
-        logger.info(f"🔄 Procesando mensaje de usuario: {user_id}")
-        
+
+        logger.info(f"Procesando mensaje de usuario: {user_id}")
+
         # 1. Añadir mensaje del usuario
         self.add_message(
             user_id=user_id,
             role=MessageRole.USER,
             content=message_content
         )
-        logger.info(f"✅ Mensaje del usuario añadido")
-        
-        # 2. Obtener conversación
+
+        # 2. Obtener conversacion
         conversation = self.get_or_create_conversation(user_id)
-        logger.info(f"📚 Conversación obtenida: {conversation.conversation_id}")
+        logger.info(f"Estado actual: {conversation.state.value}")
+
+        # 3. Si hay un flujo activo, procesarlo
+        if conversation.is_in_flow():
+            return await self._process_state_flow(
+                conversation,
+                user_id,
+                message_content
+            )
         
-        # 3. Detectar acciones/intenciones
+        # 4. Si no hay flujo, detectar nueva intención
         action = self.ai_service.detect_action(message_content, conversation)
-        
-        # ======== NUEVO: MANEJAR AGENDAMIENTO DE CITAS ========
-        if action and action.action == "schedule_appointment":
-            logger.info(f"📅 Acción de agendamiento detectada, procesando...")
 
-            # Extraer datos del action
-            extracted_data = action.params.get("extracted_data", {})
-            missing_fields = action.params.get("missing_fields", [])
-
-            # Obtener parient_id del servicio de pacientes
-            from app.services.patient_service import get_patient_service
-            patient_service = get_patient_service()
-
-            patient_registered, patient_data = await patient_service.verify_patient(phone_number=user_id)
-
-            if not patient_registered or not patient_data:
-                logger.info(f"❌ Paciente no registrado, no se puede agendar cita.")
-                response = (
-                    "No puedo agendar una cita porque no estás registrado en el sistema. "
-                    "Por favor, regístrate primero."
-                )
-
-                self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
-                return response, None
-            
-            patient_id = patient_data.get("id")
-
-            # Procesar solicitud de cita
-            response, cita_creada = await self.appointment_service.handle_schedule_request(
-                conversation=conversation,
-                extracted_data=extracted_data,
-                missing_fields=missing_fields,
-                patient_id=str(patient_id)
+        # ===== FLUJO: CONSULTAR PRÓXIMA CITA =====
+        if action and action.action == "lookup_appointment":
+            return await RescheduleHandlers.handle_lookup_appointment(
+                self,
+                conversation,
+                user_id
             )
 
-            # Añadir respuesta del asistente
-            self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
-            logger.info(f"✅ Respuesta de agendamiento procesada.")
-
-            action_data = {
-                "action": "schedule_appointment",
-                "status": "completed" if cita_creada else "pending",
-                "cita_creada": cita_creada
-            }
-
-            return response, action_data
+        # ===== FLUJO: REPROGRAMAR CITA =====
+        if action and action.action == "reschedule_appointment":
+            return await RescheduleHandlers.start_reschedule_flow(
+                self,
+                conversation,
+                user_id,
+                message_content,
+                action.params
+            )
         
-        # ======= FLUJO NORMAL: RESPUESTA CON IA =======
+        # 5. Flujo normal con modelo (solo si no hay estado activo)
         response = await self.ai_service.generate_response(
             conversation=conversation,
-            user_id=user_id, 
+            user_id=user_id,
             max_tokens=max_tokens,
             temperature=temperature
         )
 
-        logger.info(f"🤖 Respuesta generada: {response}")
-
         self.add_message(user_id=user_id, role=MessageRole.ASSISTANT, content=response)
 
-        action_data = {"action": action.action} if action else None
+        return response, None
+    
+    async def _process_state_flow(
+        self,
+        conversation: Conversation,
+        user_id: str,
+        message: str
+    ) -> tuple[str, Optional[dict]]:
+        """
+        Procesa el mensaje según el estado actual.
+        """
 
-        return response, action_data
+        state = conversation.state
+
+        # Mapa de estados -> handlers
+        state_handlers = {
+            ConversationState.RESCHEDULE_WAITING_DATE: lambda c, u, m: 
+                RescheduleHandlers.handle_reschedule_date(self, c, u, m),
+            ConversationState.RESCHEDULE_WAITING_TIME: lambda c, u, m:
+                RescheduleHandlers.handle_reschedule_time(self, c, u, m),
+            ConversationState.RESCHEDULE_CONFIRMING: lambda c, u, m:
+                RescheduleHandlers.handle_reschedule_confirm(self, c, u, m),
+        }
+
+        handler = state_handlers.get(state)
+
+        if handler:
+            return await handler(conversation, user_id, message)
+        
+        # Fallback
+        logger.warning(f"⚠️ Estado no manejado: {state}")
+        conversation.clear_state()
+        self.repo.save(conversation)
+
+        return "Disculpa, hubo un error. ¿En qué puedo ayudarte?", None
+
+    def _format_date(self, fecha: str) -> str:
+        """Formatea una fecha para mostrar al usuario."""
+        try:
+            from datetime import datetime
+            fecha_dt = datetime.fromisoformat(fecha.replace('Z', '+00:00'))
+            return fecha_dt.strftime("%d de %B de %Y")
+        except:
+            return fecha
+
+    def _format_time(self, hora: str) -> str:
+        """Formatea una hora para mostrar al usuario."""
+        try:
+            hora_clean = hora.replace(':00.000Z', '').replace('T', ' ')
+            return hora_clean.split(' ')[-1][:5]  # HH:MM
+        except:
+            return hora
