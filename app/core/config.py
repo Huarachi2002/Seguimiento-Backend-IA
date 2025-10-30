@@ -46,9 +46,27 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:hiachi20@localhost:5432/seguimiento_db"
     
     # ===== Configuración de Redis =====
-    redis_url: str = "redis://localhost:6379/0"
+    # Variables individuales (para construir redis_url dinámicamente)
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
     redis_password: str | None = None
     session_expire_time: int = 3600  # 1 hora
+    
+    @property
+    def redis_url(self) -> str:
+        """
+        Construye la URL de Redis dinámicamente desde las variables de entorno.
+        
+        Esto permite que docker-compose sobrescriba REDIS_HOST=redis
+        sin tener que cambiar toda la URL.
+        
+        Returns:
+            URL de conexión a Redis
+        """
+        if self.redis_password:
+            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
     
     # ===== Configuración de Seguimiento Backend =====
     seguimiento_service_url: str = "http://localhost:3001"
@@ -87,7 +105,9 @@ class Settings(BaseSettings):
         # Permite caracteres extra en el .env que no estén definidos aquí
         extra="ignore",
         # Case sensitive para las variables de entorno
-        case_sensitive=False
+        case_sensitive=False,
+        # Resolver conflicto con namespace "model_"
+        protected_namespaces=('settings_',)
     )
     
     @property

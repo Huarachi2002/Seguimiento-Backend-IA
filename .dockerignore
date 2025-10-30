@@ -1,0 +1,91 @@
+# ========================================
+# .dockerignore - Archivos a ignorar en Docker build
+# ========================================
+# Similar a .gitignore pero para Docker
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Environment files (sensibles)
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentación (no necesaria en runtime)
+*.md
+docs/
+
+# Tests (no necesarios en producción)
+tests/
+test_*.py
+
+# Modelos descargados (se descargan en runtime)
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# Temporales
+*.tmp
+*.temp
+*.bak
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Scripts de desarrollo
+scripts/
+*.sh
+*.bat
+*.ps1
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Databases locales (no copiar)
+*.db
+*.sqlite
+*.sqlite3

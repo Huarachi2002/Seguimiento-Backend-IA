@@ -8,6 +8,7 @@ pydantic-settings==2.1.0
 transformers==4.35.2
 torch==2.1.0
 sentencepiece==0.1.99  # Para algunos tokenizers
+numpy<2.0.0
 datasets>=2.14.0  # Para fine-tuning
 accelerate>=0.24.0  # Para optimizar entrenamiento
 

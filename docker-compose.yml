@@ -1,12 +1,13 @@
 # ========================================
 # Docker Compose para WhatsApp AI Assistant
 # ========================================
-# Este archivo orquesta múltiples servicios
+# Stack: FastAPI + Redis
+# Optimizado para desarrollo y producción
 
 version: '3.8'
 
 services:
-  # ===== Servicio principal: FastAPI Backend =====
+  # ===== Servicio principal: FastAPI Backend con IA =====
   api:
     build:
       context: .
@@ -15,21 +16,42 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      # Sobrescribir variables de entorno
+      # Configuración de la aplicación
+      - APP_NAME=WhatsApp AI Assistant
       - ENVIRONMENT=production
-      - DATABASE_URL=postgresql://postgres:password@db:5432/whatsapp_ai
-      - REDIS_URL=redis://redis:6379/0
       - LOG_LEVEL=INFO
+      
+      # Configuración de Redis (usar nombre del servicio como host)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_DECODE_RESPONSES=true
+      - CONVERSATION_TTL=3600
+      
+      # Configuración del modelo de IA
+      - MODEL_NAME=/app/training/models/gpt2-spanish-tb-structured
+      - DEVICE=cpu
+      - MODEL_CACHE_DIR=/app/models
+      - MAX_LENGTH=150
+      - TEMPERATURE=0.7
+      
+      # Configuración del backend de seguimiento
+      - SEGUIMIENTO_SERVICE_URL=http://host.docker.internal:3001
+      - SEGUIMIENTO_TIMEOUT=10
+      
+      # Centro médico
+      - MEDICAL_CENTER_NAME=CAÑADA DEL CARMEN
     env_file:
-      - .env
+      - .env  # Sobrescribe con variables de .env si existe
     volumes:
-      # Montar logs para persistencia
+      # Persistir logs
       - ./logs:/app/logs
-      # Montar cache de modelos
+      # Persistir cache de modelos (evita redescargar)
+      - ./app/training/models:/app/training/models:ro
       - model-cache:/app/models
     depends_on:
-      - db
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - whatsapp-ai-network
@@ -38,39 +60,26 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 60s  # 1 minuto para descargar modelo en primer inicio
+    # Límites de recursos (ajustar según tu servidor)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'      # Máximo 2 CPUs
+          memory: 4G     # Máximo 4GB RAM
+        reservations:
+          cpus: '1'      # Mínimo 1 CPU
+          memory: 2G     # Mínimo 2GB RAM
 
-  # ===== Base de Datos: PostgreSQL =====
-  db:
-    image: postgres:15-alpine
-    container_name: whatsapp-ai-db
-    environment:
-      POSTGRES_DB: whatsapp_ai
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-    networks:
-      - whatsapp-ai-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ===== Cache: Redis =====
+  # ===== Cache y Estado: Redis =====
   redis:
     image: redis:7-alpine
     container_name: whatsapp-ai-redis
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     ports:
-      - "6379:6379"
+      - "6379:6379"  # Exponer para debug (remover en producción)
     restart: unless-stopped
     networks:
       - whatsapp-ai-network
@@ -79,31 +88,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # ===== (Opcional) Adminer - UI para DB =====
-  adminer:
-    image: adminer:latest
-    container_name: whatsapp-ai-adminer
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
-    restart: unless-stopped
-    networks:
-      - whatsapp-ai-network
-    profiles:
-      - dev  # Solo se inicia con: docker-compose --profile dev up
+    # Límites de recursos para Redis
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
 # ===== Volumes =====
 volumes:
-  postgres-data:
-    driver: local
   redis-data:
     driver: local
+    name: whatsapp-ai-redis-data
   model-cache:
     driver: local
+    name: whatsapp-ai-model-cache
 
 # ===== Networks =====
 networks:
   whatsapp-ai-network:
     driver: bridge
+    name: whatsapp-ai-network

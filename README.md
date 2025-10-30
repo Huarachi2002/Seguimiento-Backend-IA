@@ -48,9 +48,36 @@ app/
 
 ## 🚀 Inicio Rápido
 
+### Opción 1: Docker (RECOMENDADO) 🐳
+
+```powershell
+# 1. Build
+.\docker-deploy.ps1 -Action build
+
+# 2. Start
+.\docker-deploy.ps1 -Action start
+
+# 3. Verificar
+.\docker-deploy.ps1 -Action status
+```
+
+✅ **Ventajas Docker**:
+- Sin instalación de Python
+- Aislamiento completo
+- Redis incluido
+- Listo para producción
+- Reproducible en cualquier máquina
+
+📚 **Documentación completa**: Ver [DOCKER_README.md](DOCKER_README.md) y [DOCKER_GUIA.md](DOCKER_GUIA.md)
+
+---
+
+### Opción 2: Instalación Local
+
 ### 1. Prerrequisitos
 
-- Python 3.10 o superior
+- Python 3.10 (verificar: `python --version`)
+- Redis instalado y corriendo
 - (Opcional) GPU con CUDA para mejor performance
 
 ### 2. Instalación
