@@ -255,10 +255,17 @@ class RescheduleHandlers:
             conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
             return response, None
         
-        # Guardar y pedir hora
-        conversation.state_data["fecha"] = fecha
-        conversation.set_state(ConversationState.RESCHEDULE_WAITING_TIME)
+        # Guardar en state_data y actualizar estado
+        current_data = conversation.state_data.get("extracted_data", {})
+        current_data["fecha"] = fecha
+        
+        conversation.set_state(
+            ConversationState.RESCHEDULE_WAITING_TIME,
+            extracted_data = current_data
+        )
+        
         conversation_service.repo.save(conversation)
+        logger.info(f"Datos guardados en state_data: {conversation.state_data}")
         
         response = f"Perfecto, para el {RescheduleHandlers._format_date(fecha)}. ¿A qué hora?"
         conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
@@ -303,11 +310,18 @@ class RescheduleHandlers:
             return response, None
         
         # Guardar y confirmar
-        conversation.state_data["hora"] = hora
-        conversation.set_state(ConversationState.RESCHEDULE_CONFIRMING)
+        current_data = conversation.state_data.get("extracted_data", {})
+        current_data["hora"] = hora
+        
+        conversation.set_state(
+            ConversationState.RESCHEDULE_CONFIRMING,
+            extracted_data = current_data
+        )
         conversation_service.repo.save(conversation)
         
-        fecha = conversation.state_data.get("fecha")
+        logger.info(f"Datos completos guardados: {conversation.state_data}")
+        
+        fecha = current_data.get("fecha")
         
         response = (
             f"📅 Nueva cita:\n"
@@ -352,10 +366,13 @@ class RescheduleHandlers:
             return response, None
         
         # Reprogramar - Validar que existan los datos en el estado
-        fecha = conversation.state_data.get("fecha")
-        hora = conversation.state_data.get("hora")
-        patient_id = conversation.state_data.get("patient_id")
-        
+        extracted_data = conversation.state_data.get("extracted_data", {})
+        fecha = extracted_data.get("fecha")
+        hora = extracted_data.get("hora")
+        patient_id = extracted_data.get("patient_id")
+
+        logger.info(f"Datos recuperados para confirmacion: fecha={fecha}, hora={hora}, patient_id={patient_id}")
+
         if not fecha or not hora or not patient_id:
             logger.error(f"❌ Datos faltantes en estado: fecha={fecha}, hora={hora}, patient_id={patient_id}")
             conversation.clear_state()

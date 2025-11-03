@@ -20,7 +20,7 @@ import re
 import json
 from typing import List, Optional, Tuple
 from urllib import response
-from app.domain.models import Message, MessageRole, ActionIntent, Conversation
+from app.domain.models import ConversationState, Message, MessageRole, ActionIntent, Conversation
 from app.domain.exceptions import ModelNotLoadedException, InvalidContextException
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -247,6 +247,108 @@ class AIService:
         """
         message_lower = message.lower()
         
+        if conversation.state == ConversationState.RESCHEDULE_WAITING_DATE:
+            logger.info("Continuando flujo: esperando fecha")
+            
+            # Recuperar datos acumulados
+            accumulated_data = conversation.state_data.get('reschedule_data', {})
+            
+            # Extraer nueva fecha/hora del mensaje
+            new_data = self._extract_appointment_data(message)
+            
+            # FUSIONAR datos acumulados con nuevos
+            accumulated_data.update({k: v for k, v in new_data.items() if v is not None})
+            
+            # Determinar que falta
+            missing_fields = []
+            if not accumulated_data.get("fecha"):
+                missing_fields.append("fecha")
+            if not accumulated_data.get("hora"):
+                missing_fields.append("hora")
+                
+            # Actualizar estado
+            if not missing_fields:
+                # Ya tenemos todo, cambiar a confirmacion
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_CONFIRMING,
+                    extracted_data = accumulated_data
+                )
+                return ActionIntent(
+                    action="reschedule_appointment",
+                    params={
+                        "status": "ready",
+                        "extracted_data": accumulated_data,
+                        "missing_fields": []
+                    },
+                    confidence=0.95
+                )
+            elif "hora" not in missing_fields:
+                # Tenemos fecha, falta hora
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_WAITING_DATE,
+                    extracted_data=accumulated_data
+                )
+            else:
+                # Seguimos esperando fecha
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_WAITING_DATE,
+                    extracted_data=accumulated_data
+                )
+            
+            return ActionIntent(
+                action="reschedule_appointment",
+                params={
+                    "status": "collecting_info",
+                    "extracted_data": accumulated_data,
+                    "missing_fields": missing_fields
+                },
+                confidence=0.9
+            )
+            
+        # ====== SI ESTAMOS ESPERANDO HORA ======
+        if conversation.state == ConversationState.RESCHEDULE_WAITING_TIME:
+            logger.info("Continuando flujo: esperando hora")
+            
+            accumulated_data = conversation.state_data.get("extracted_data", {})
+            new_data = self._extract_appointment_data(message)
+            accumulated_data.update({k: v for k, v in new_data.items() if v is not None})
+            
+            missing_fields = []
+            if not accumulated_data.get("hora"):
+                missing_fields.append("hora")
+                
+            if not missing_fields:
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_CONFIRMING,
+                    extracted_data=accumulated_data
+                )
+                return ActionIntent(
+                    action="reschedule_appointment",
+                    params={
+                        "status": "ready",
+                        "extracted_data": accumulated_data,
+                        "missing_fields": []
+                    },
+                    confidence=0.95
+                )
+            else:
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_WAITING_TIME,
+                    extracted_data=accumulated_data
+                )
+                
+            return ActionIntent(
+                action="reschedule_appointment",
+                params={
+                    "status": "collecting_info",
+                    "extracted_data": accumulated_data,
+                    "missing_fields": missing_fields
+                },
+                confidence=0.9
+            )
+        
+                
+                
         # ===== DETECCIÓN: REPROGRAMAR CITA (PRIMERO) =====
         # Verificar primero reprogramar porque "cambiar mi cita" contiene "cita"
         reschedule_keywords = ['reprogramar', 'cambiar', 'mover cita', 'cambiar cita', 
@@ -265,6 +367,24 @@ class AIService:
                 missing_fields.append("fecha")
             if not extracted_data.get("hora"):
                 missing_fields.append("hora")
+                
+            if missing_fields:
+                if "fecha" in missing_fields:
+                    conversation.set_state(
+                        ConversationState.RESCHEDULE_WAITING_DATE,
+                        extracted_data=extracted_data
+                    )
+                elif "hora" in missing_fields:
+                    conversation.set_state(
+                        ConversationState.RESCHEDULE_WAITING_TIME,
+                        extracted_data=extracted_data
+                    )
+                    
+            else:
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_CONFIRMING,
+                    extracted_data=extracted_data
+                )
 
             return ActionIntent(
                 action="reschedule_appointment",

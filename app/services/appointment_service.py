@@ -14,7 +14,7 @@ Flujo:
 
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
-from app.domain.models import Conversation, Message, MessageRole
+from app.domain.models import Conversation, ConversationState, Message, MessageRole
 from app.infrastructure.http import SeguimientoClient
 from app.core.logging import get_logger
 
@@ -57,10 +57,32 @@ class AppointmentService:
 
         logger.info(f"Procesando solicitud de cita para paciente {patient_id}")
         logger.info(f"Datos extraidos: {extracted_data}, Campos faltantes: {missing_fields}")
+        
+        # Recuperar datos acumulados del estado de la conversacion
+        accumulated_data = conversation.state_data.get("extracted_data", {})
+        logger.info(f"Datos acumulados previos: {accumulated_data}")
+        
+        # Fusionar con datos actuales (priorizar datos nuevos)
+        final_data = {**accumulated_data, **extracted_data}
+        logger.info(f"Datos acumulados despues de fusionar: {final_data}")
 
         # Caso 1: Faltan datos - Pedir conversacionalmente
         if missing_fields:
-            return self._ask_for_missing_data(extracted_data, missing_fields), None
+            mensaje = self._ask_for_missing_data(final_data, missing_fields)
+            
+            # Persistir dato en el estado
+            if conversation.state == ConversationState.IDLE:
+                conversation.set_state(
+                    ConversationState.RESCHEDULE_WAITING_DATE if "fecha" in missing_fields else ConversationState.RESCHEDULE_WAITING_TIME,
+                    extracted_data = final_data
+                )
+            else:
+                # Actualizar state_data sin cambiar estado
+                conversation.state_data["extracted_data"] = final_data
+                conversation.updated_at = datetime.now()
+                
+            logger.info(f"Estado actualizado: {conversation.state.value}, Data: {conversation.state_data}")
+            return mensaje, None
         
         # Caso 2: Todos los datos presentes - Validar
         is_valid, validation_error = self._validate_appointment_data(extracted_data)
@@ -81,6 +103,9 @@ class AppointmentService:
 
             if cita_reprogramada:
                 logger.info(f"Cita reprogramada exitosamente: {cita_reprogramada}")
+
+                conversation.clear_state()
+                logger.info("Estado limpiado despues de reprogramar cita.")
 
                 # Mensaje de confirmacion
                 mensaje = self._format_confirmation_message(cita_reprogramada)

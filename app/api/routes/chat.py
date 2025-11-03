@@ -115,6 +115,7 @@ async def chat_endpoint(
         )
         
         logger.info(f"✅ Respuesta generada exitosamente para {request.user_id}")
+        logger.info(f" Estado actual: {conversation.state.value}, Data: {conversation.state_data}")
         
         return response
         
