@@ -398,7 +398,7 @@ class AIService:
         
         # ===== DETECCIÓN: CONSULTAR PRÓXIMA CITA (SEGUNDO) =====
         lookup_keywords = ['próxima cita', 'proxima cita', 'mis citas', 'cuándo', 'cuando', 
-                          'qué día', 'que dia', 'mi cita', 'cita programada']
+                          'qué día', 'que dia', 'mi cita', 'cita programada', 'citas']
         
         if any(word in message_lower for word in lookup_keywords):
             logger.info("🎯 Acción detectada: lookup_appointment")
@@ -449,7 +449,7 @@ class AIService:
             try:
                 # convertir a formato ISO
                 if '/' in fecha_str:
-                    parts: fecha_str.split('/')
+                    parts = fecha_str.split('/')
                 else:
                     parts = fecha_str.split('-')
                 dia = int(parts[0])
@@ -652,14 +652,21 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
                 data_lines.append("Citas = []")
                 logger.info("📊 Sin próximas citas encontradas")
             
-            # Última visita (si está disponible)
-            ultima_visita = patient_data.get('ultima_visita')
-            if ultima_visita:
-                logger.info(f"📊 Última visita: {ultima_visita}")
-                data_lines.append(f'Ultima_visita = "{ultima_visita}"')
+            # ✅ FIX: Agregar última cita al contexto
+            ultima_cita = patient_data.get('ultima_cita')
+            if ultima_cita and isinstance(ultima_cita, dict):
+                logger.info(f"📊 Última cita encontrada: {ultima_cita}")
+                fecha_actual = ultima_cita.get('fecha_actual', 'N/A')
+                fecha = fecha_actual.split('T')[0] if 'T' in fecha_actual else fecha_actual
+                estado = ultima_cita.get('estado')
+                estado_desc = estado.get('descripcion', 'N/A') if estado else 'N/A'
+                tipo = ultima_cita.get('tipo')
+                tipo_desc = tipo.get('descripcion', 'N/A') if tipo else 'N/A'
+                logger.info(f"📊 Última cita - Fecha: {fecha}, Tipo: {tipo_desc}, Estado: {estado_desc}")
+                data_lines.append(f'Ultima_cita = {{fecha: "{fecha}", tipo: "{tipo_desc}", estado: "{estado_desc}"}}')
             else:
-                logger.info("📊 Sin última visita registrada")
-                data_lines.append("Ultima_visita = None")
+                logger.info("📊 Sin última cita registrada")
+                data_lines.append("Ultima_cita = None")
         else:
             # Paciente NO registrado
             data_lines.append("Nombre = None")
@@ -772,7 +779,7 @@ Si preguntan algo fuera de Tuberculosis, responde: "Lo siento, solo atiendo cons
             max_length=512,
             truncation=True,
             padding=True,
-            return_attention_mask=True  # ✅ CRÍTICO: Evita warnings
+            return_attention_mask=True 
         )
 
         # Mover a dispositivo

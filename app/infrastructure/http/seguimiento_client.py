@@ -66,6 +66,7 @@ class SeguimientoClient:
                 response.raise_for_status()
                 
                 json_response = response.json()
+                logger.info(f"📥 Respuesta raw del backend: {json_response}")
 
                 if isinstance(json_response, dict):
                     status = json_response.get("statusCode")
@@ -74,9 +75,19 @@ class SeguimientoClient:
                     if status == 500:
                         logger.error(f"❌ Error 500 desde Seguimiento: {data}")
                         return None
-
-                    return data
+                    
+                    # ✅ FIX: Si tiene la estructura esperada, retornar data
+                    if data is not None:
+                        logger.info(f"✅ Retornando 'data' del response: {data}")
+                        return data
+                    
+                    # ✅ Si no tiene 'data', pero tiene statusCode 200/201, retornar todo
+                    if status in [200, 201]:
+                        logger.info(f"✅ Retornando response completo (sin 'data'): {json_response}")
+                        return json_response
                 
+                # Si no es dict o no tiene la estructura esperada, retornar tal cual
+                logger.info(f"✅ Retornando response directo: {json_response}")
                 return json_response
                 
         except httpx.TimeoutException:
@@ -208,6 +219,7 @@ class SeguimientoClient:
             json=payload
         )
         
+        logger.info(f"✅ Cita reprogramada: {response}")
         return response
     
     async def get_patient_appointments(

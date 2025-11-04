@@ -409,3 +409,68 @@ Para preguntas o issues, abre un issue en GitHub o contacta al equipo de desarro
 ---
 
 **Desarrollado con ❤️ para CAÑADA DEL CARMEN**
+
+
+**Para Pruebas de conversacion el flujo correcto podria ser:**
+User:
+{
+  "user_id": "78956014",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hola tengo citas disponibles"
+    }
+  ]
+}
+
+Assist:
+{
+    "response": "📅 Tu próxima cita:\n\n• Fecha: 04 de November de 2025\n• Hora: 00:00\n• Tipo: Toma de medicamentos\n• Estado: Programado\n\nTe esperamos en CAÑADA DEL CARMEN. Si necesitas reprogramar, dímelo.",
+    "user_id": "78956014",
+    "conversation_id": "conv_78956014_1762198764",
+    "action": "lookup_appointment",
+    "params": null,
+    "timestamp": "2025-11-03T21:21:18.149019"
+}
+
+User:
+{
+  "user_id": "78956014",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Deseo reprogramar mi cita para el dia de mañana a las 10:00 am"
+    }
+  ]
+}
+
+Assist:
+{
+    "response": "Por favor responde 'sí' para confirmar o 'no' para cancelar.",
+    "user_id": "78956014",
+    "conversation_id": "conv_78956014_1762198764",
+    "action": null,
+    "params": null,
+    "timestamp": "2025-11-03T21:24:12.080148"
+}
+
+User:
+{
+  "user_id": "78956014",
+  "messages": [
+    {
+      "role": "user",
+      "content": "sí"
+    }
+  ]
+}
+
+Assist:
+{
+    "response": "✅ ¡Cita reprogramada!\n\n📅 04 de November de 2025\n⏰ 10:00\n\nTe esperamos en CAÑADA DEL CARMEN.",
+    "user_id": "78956014",
+    "conversation_id": "conv_78956014_1762206455",
+    "action": "reschedule_appointment",
+    "params": null,
+    "timestamp": "2025-11-03T22:32:02.099236"
+}

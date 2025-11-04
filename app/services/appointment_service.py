@@ -239,22 +239,42 @@ class AppointmentService:
 
         Args:
             patient_id: ID del paciente
-            fecha: Fecha de la cita (YYYY-MM-DD)
-            hora: Hora de la cita (HH:MM)
+            fecha: Fecha de la cita (YYYY-MM-DD o YYYY-MM-DDT00:00:00.000Z)
+            hora: Hora de la cita (HH:MM o HH:MM:SS.000Z)
             motivo: Motivo de la cita
 
         Returns:
             Datos de la cita reprogramada o None si fallo
         """
 
-        # Combinar fecha y hora en timestamp
-        fecha_hora_str = f"{fecha}T{hora}:00.000Z"
+        # ✅ FIX: Limpiar fecha y hora para evitar duplicación
+        # Extraer solo la parte de fecha (YYYY-MM-DD)
+        if 'T' in fecha:
+            fecha_clean = fecha.split('T')[0]
+        else:
+            fecha_clean = fecha
+        
+        # Extraer solo la parte de hora (HH:MM:SS)
+        if '.000Z' in hora:
+            hora_clean = hora.replace('.000Z', '').replace('T', '')
+        elif ':' in hora:
+            # Asegurar formato HH:MM:SS
+            parts = hora.split(':')
+            if len(parts) == 2:
+                hora_clean = f"{parts[0]}:{parts[1]}:00"
+            else:
+                hora_clean = hora
+        else:
+            hora_clean = f"{hora}:00:00"
+
+        # Combinar fecha y hora en timestamp ISO 8601
+        fecha_hora_str = f"{fecha_clean}T{hora_clean}.000Z"
 
         payload = {
             "id_paciente": patient_id,
             "fecha_programada": fecha_hora_str,
             "motivo": motivo,
-            "estado_id": 1 # Estado 'Programado'
+            "id_estado": 1 # Estado 'Programado'
         }
 
         logger.info(f"Reprogramando cita con payload: {payload}")

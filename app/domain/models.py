@@ -149,15 +149,16 @@ class Conversation:
 
     def set_state(self, state: ConversationState, **data):
         """
-        Cambia el estado de la conversacion
+        Cambia el estado de la conversacion y ACTUALIZA los datos (no los reemplaza).
 
         Args:
             state: Nuevo estado
-            **data: Datos adicionales para el estado
+            **data: Datos adicionales para el estado (se fusionan con los existentes)
         """
-
         self.state = state
-        self.state_data = data
+        # ✅ FIX: Actualizar en lugar de reemplazar
+        if data:
+            self.state_data.update(data)
         self.updated_at = datetime.now()
 
     def clear_state(self):

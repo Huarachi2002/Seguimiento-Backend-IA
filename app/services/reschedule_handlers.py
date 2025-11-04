@@ -170,15 +170,20 @@ class RescheduleHandlers:
         
         # Si tiene fecha
         if extracted_data.get("fecha"):
+            # ✅ FIX: Actualizar state_data preservando patient_id, cita_id
             conversation.state_data["fecha"] = extracted_data["fecha"]
-            conversation.set_state(ConversationState.RESCHEDULE_WAITING_TIME)
+            conversation.state_data["extracted_data"] = extracted_data
+            conversation.state = ConversationState.RESCHEDULE_WAITING_TIME
             
             if extracted_data.get("hora"):
+                # ✅ FIX: Actualizar state_data preservando todos los datos
                 conversation.state_data["hora"] = extracted_data["hora"]
-                conversation.set_state(ConversationState.RESCHEDULE_CONFIRMING)
+                conversation.state_data["extracted_data"] = extracted_data
+                conversation.state = ConversationState.RESCHEDULE_CONFIRMING
                 conversation_service.repo.save(conversation)
                 
                 logger.info(f"🔄 Pasando a confirmación con fecha={extracted_data['fecha']}, hora={extracted_data['hora']}")
+                logger.info(f"📊 State data guardado: {conversation.state_data}")
                 
                 return await RescheduleHandlers.handle_reschedule_confirm(
                     conversation_service, conversation, user_id, message
@@ -259,13 +264,15 @@ class RescheduleHandlers:
         current_data = conversation.state_data.get("extracted_data", {})
         current_data["fecha"] = fecha
         
+        # ✅ FIX: Guardar fecha directamente en state_data también
         conversation.set_state(
             ConversationState.RESCHEDULE_WAITING_TIME,
-            extracted_data = current_data
+            fecha=fecha,
+            extracted_data=current_data
         )
         
         conversation_service.repo.save(conversation)
-        logger.info(f"Datos guardados en state_data: {conversation.state_data}")
+        logger.info(f"📊 Datos guardados en state_data: {conversation.state_data}")
         
         response = f"Perfecto, para el {RescheduleHandlers._format_date(fecha)}. ¿A qué hora?"
         conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
@@ -280,32 +287,51 @@ class RescheduleHandlers:
     ) -> Tuple[str, Optional[Dict]]:
         """Procesa la hora ingresada."""
         logger.info("⏰ Procesando hora")
+        logger.info(f"⏰ Mensaje recibido: {message}")
         
         # Extraer hora
         extracted_data = conversation_service.ai_service._extract_appointment_data(message)
         hora = extracted_data.get("hora")
         
+        logger.info(f"⏰ Hora extraída: {hora}")
+        
         if not hora:
-            response = "No entendí la hora. Intenta: 10:00, 14:30"
+            response = "No entendí la hora. Intenta: 10:00, 14:30, o indica AM/PM"
             conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
             return response, None
         
-        # Validar
+        # Validar - Limpiar hora primero
         try:
-            hora_str = hora.replace(':00.000Z', '').replace('T', ' ')
-            hora_dt = datetime.strptime(hora_str.split(' ')[-1], "%H:%M:%S")
+            # ✅ FIX: Limpiar formato de hora correctamente
+            # Puede venir como: "11:30:00.000Z" o "14:30:00.000Z"
+            hora_clean = hora.replace('.000Z', '').replace('T', '')
+            
+            # Parsear con el formato correcto
+            if hora_clean.count(':') == 2:
+                # Formato HH:MM:SS
+                hora_dt = datetime.strptime(hora_clean, "%H:%M:%S")
+            elif hora_clean.count(':') == 1:
+                # Formato HH:MM
+                hora_dt = datetime.strptime(hora_clean, "%H:%M")
+            else:
+                raise ValueError(f"Formato de hora no reconocido: {hora_clean}")
+            
+            logger.info(f"⏰ Hora parseada: {hora_dt.hour}:{hora_dt.minute:02d}")
             
             if hora_dt.hour < 7 or hora_dt.hour >= 19:
-                response = "Horario: 7:00 - 19:00"
+                response = "El horario de atención es de 7:00 a 19:00. Por favor elige otra hora."
                 conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
                 return response, None
             
             if hora_dt.minute not in [0, 30]:
-                response = "Citas cada 30 min (10:00, 10:30)"
+                response = "Las citas son cada 30 minutos (ej: 10:00, 10:30). Por favor ajusta la hora."
                 conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
                 return response, None
-        except:
-            response = "Hora inválida."
+                
+        except Exception as e:
+            logger.error(f"❌ Error validando hora: {e}")
+            logger.error(f"❌ Hora recibida: {hora}")
+            response = "Hora inválida. Intenta con formato 10:00 o 14:30, puedes usar AM/PM."
             conversation_service.add_message(user_id, MessageRole.ASSISTANT, response)
             return response, None
         
@@ -313,13 +339,15 @@ class RescheduleHandlers:
         current_data = conversation.state_data.get("extracted_data", {})
         current_data["hora"] = hora
         
+        # ✅ FIX: Guardar hora directamente en state_data también
         conversation.set_state(
             ConversationState.RESCHEDULE_CONFIRMING,
-            extracted_data = current_data
+            hora=hora,
+            extracted_data=current_data
         )
         conversation_service.repo.save(conversation)
         
-        logger.info(f"Datos completos guardados: {conversation.state_data}")
+        logger.info(f"📊 Datos completos guardados: {conversation.state_data}")
         
         fecha = current_data.get("fecha")
         
@@ -366,15 +394,25 @@ class RescheduleHandlers:
             return response, None
         
         # Reprogramar - Validar que existan los datos en el estado
+        # ✅ FIX: Intentar recuperar de múltiples fuentes (robustez)
         extracted_data = conversation.state_data.get("extracted_data", {})
-        fecha = extracted_data.get("fecha")
-        hora = extracted_data.get("hora")
-        patient_id = extracted_data.get("patient_id")
+        
+        # Intentar recuperar fecha (de extracted_data o directamente de state_data)
+        fecha = conversation.state_data.get("fecha") or extracted_data.get("fecha")
+        
+        # Intentar recuperar hora (de extracted_data o directamente de state_data)
+        hora = conversation.state_data.get("hora") or extracted_data.get("hora")
+        
+        # Recuperar patient_id y cita_id directamente de state_data
+        patient_id = conversation.state_data.get("patient_id")
+        cita_id = conversation.state_data.get("cita_id")
 
-        logger.info(f"Datos recuperados para confirmacion: fecha={fecha}, hora={hora}, patient_id={patient_id}")
+        logger.info(f"Datos recuperados para confirmacion: fecha={fecha}, hora={hora}, patient_id={patient_id}, cita_id={cita_id}")
+        logger.info(f"📊 State data completo: {conversation.state_data}")
 
         if not fecha or not hora or not patient_id:
             logger.error(f"❌ Datos faltantes en estado: fecha={fecha}, hora={hora}, patient_id={patient_id}")
+            logger.error(f"❌ State data actual: {conversation.state_data}")
             conversation.clear_state()
             conversation_service.repo.save(conversation)
             response = "Hubo un error. Por favor intenta reprogramar de nuevo."
@@ -400,6 +438,8 @@ class RescheduleHandlers:
                 hora=hora_clean,
                 motivo="Control de Tuberculosis"
             )
+
+            logger.info(f"✅ Cita reprogramada: {cita}")
             
             if cita:
                 response = (
