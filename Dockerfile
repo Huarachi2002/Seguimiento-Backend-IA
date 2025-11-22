@@ -32,7 +32,9 @@ COPY requirements.txt .
 # --user: Instala en ~/.local (fácil de copiar a stage 2)
 # --no-cache-dir: No guarda cache de pip (reduce tamaño)
 # --upgrade: Asegura versiones más recientes
+# IMPORTANTE: Instalamos torch CPU-only explícitamente para reducir tamaño (de 2GB a 200MB)
 RUN pip install --no-cache-dir --user --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --user torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir --user -r requirements.txt
 
 
@@ -70,8 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Crear usuario no-root por seguridad
 # NUNCA ejecutes aplicaciones como root en producción
 RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app /app/logs /app/models && \
-    chown -R appuser:appuser /app
+    mkdir -p /app /app/logs /app/models /home/appuser/.cache/huggingface && \
+    chown -R appuser:appuser /app /home/appuser/.cache
 
 # Establecer directorio de trabajo
 WORKDIR /app
@@ -80,7 +82,9 @@ WORKDIR /app
 # Cambiar de /root/.local a /home/appuser/.local
 COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
 
-COPY app/training/models/gpt2-spanish-tb-structured /app/training/models/gpt2-spanish-tb-structured
+# Copiar modelo pre-entrenado si existe localmente (opcional pero recomendado para Azure)
+# Si no existe, el código lo descargará, pero aumentará el tiempo de inicio
+COPY --chown=appuser:appuser app/training/models/gpt2-spanish-tb-structured /app/training/models/gpt2-spanish-tb-structured
 
 # Copiar código de la aplicación
 # --chown asegura que appuser sea dueño de los archivos
