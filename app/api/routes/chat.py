@@ -79,6 +79,11 @@ async def chat_endpoint(
         
         # Verificar rate limiting
         redis = get_redis()
+
+        # Eliminar los primer 3 numeros que son los prefijos 591
+        if (request.user_id.startswith("591")):
+            request.user_id = request.user_id[3:]
+
         await verify_rate_limit(request.user_id, redis)
         logger.info(f"✅ Rate limit verificado para usuario: {request.user_id}")
         

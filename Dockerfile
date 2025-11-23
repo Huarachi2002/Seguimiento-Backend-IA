@@ -96,16 +96,14 @@ USER appuser
 # Exponer puerto
 EXPOSE 8000
 
-# Health check
-# Docker usará esto para verificar si el contenedor está saludable
-# - interval: Cada cuánto verificar
-# - timeout: Tiempo máximo de espera
-# - start-period: Tiempo de gracia al inicio (para descargar modelo)
-# - retries: Intentos antes de marcar como unhealthy
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+RUN python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; \
+    model_name = 'Hiachi20/gpt2-spanish-tb-structured'; \
+    print('Downloading model...'); \
+    AutoTokenizer.from_pretrained(model_name, cache_dir='/app/models'); \
+    AutoModelForCausalLM.from_pretrained(model_name, cache_dir='/app/models'); \
+    print('Model downloaded successfully')"
 
 # Comando de inicio
 # Usar exec form para mejor manejo de signals (SIGTERM, etc.)
 # El modelo se descargará automáticamente en el primer request
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

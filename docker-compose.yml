@@ -29,7 +29,7 @@ services:
       - CONVERSATION_TTL=3600
       
       # Configuración del modelo de IA
-      - MODEL_NAME=/app/training/models/gpt2-spanish-tb-structured
+      - MODEL_NAME=Hiachi20/gpt2-spanish-tb-structured
       - DEVICE=cpu
       - MODEL_CACHE_DIR=/app/models
       - MAX_LENGTH=150
