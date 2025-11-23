@@ -334,6 +334,46 @@ class ConversationService:
         # 4. Si no hay flujo, detectar nueva intención
         action = self.ai_service.detect_action(message_content, conversation)
 
+        # ===== FLUJO: SOLICITUD URGENTE (PRIORIDAD MÁXIMA) =====
+        # Manejar primero las solicitudes urgentes de salud
+        if action and action.action == "urgent_help":
+            return await RescheduleHandlers.handle_urgent_request(
+                self,
+                conversation,
+                user_id,
+                message_content
+            )
+
+        # ===== FLUJO: CONSULTAR PRÓXIMA CITA =====
+        if action and action.action == "lookup_appointment":
+            return await RescheduleHandlers.handle_lookup_appointment(
+                self,
+                conversation,
+                user_id
+            )
+
+        # ===== FLUJO: REPROGRAMAR CITA =====
+        if action and action.action == "reschedule_appointment":
+            return await RescheduleHandlers.start_reschedule_flow(
+                self,
+                conversation,
+                user_id,
+                message_content,
+                action.params
+            )
+        
+        # 5. Flujo normal con modelo (solo si no hay estado activo)
+        response = await self.ai_service.generate_response(
+            conversation=conversation,
+            user_id=user_id,
+                conversation,
+                user_id,
+                message_content
+            )
+        
+        # 4. Si no hay flujo, detectar nueva intención
+        action = self.ai_service.detect_action(message_content, conversation)
+
         # ===== FLUJO: CONSULTAR PRÓXIMA CITA =====
         if action and action.action == "lookup_appointment":
             return await RescheduleHandlers.handle_lookup_appointment(

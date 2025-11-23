@@ -84,7 +84,7 @@ COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
 
 # Copiar modelo pre-entrenado si existe localmente (opcional pero recomendado para Azure)
 # Si no existe, el código lo descargará, pero aumentará el tiempo de inicio
-COPY --chown=appuser:appuser app/training/models/gpt2-spanish-tb-structured /app/training/models/gpt2-spanish-tb-structured
+# COPY --chown=appuser:appuser app/training/models/gpt2-spanish-tb-structured /app/training/models/gpt2-spanish-tb-structured
 
 # Copiar código de la aplicación
 # --chown asegura que appuser sea dueño de los archivos

@@ -39,7 +39,7 @@ class SeguimientoClient:
         self.base_url = base_url.rstrip('/')
         self.timeout = 10.0  # Timeout de 10 segundos
         
-        logger.info(f"🌐 SeguimientoClient inicializado: {self.base_url}")
+        logger.info(f"SeguimientoClient inicializado: {self.base_url}")
     
     async def _request(
         self,
@@ -198,6 +198,28 @@ class SeguimientoClient:
         )
         
         return response
+
+    async def notification_paciente_urgent(self, phone_number: str) -> Optional[Dict[str, Any]]:
+        """
+        Envia una notificacion al supervisor mediante el servicio de seguimiento
+        
+        Args:
+            phone_number: Número de teléfono del paciente
+        
+        """
+        logger.info(f"Enviando notificacion al supervisor: {phone_number}")
+        
+        response = await self._request(
+            method="GET",
+            endpoint=f"/api/paciente/riesgo-salud/{phone_number}",
+        )
+
+        if response:
+            logger.info(f"Notificacion enviada: {response.get('message', 'N/A')}")
+            return response
+        
+        logger.info(f"Notificacion no enviada: {phone_number}")
+        return None
     
     # ===== Métodos de Citas =====
 

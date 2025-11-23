@@ -235,6 +235,7 @@ class AIService:
         Detecta si el mensaje del usuario tiene una intención de acción.
         
         Acciones soportadas:
+        - "Me siento mal" -> action: urgent_help (PRIORIDAD MÁXIMA)
         - "¿Cuándo es mi próxima cita?" -> action: lookup_appointment
         - "Quiero cambiar mi cita" -> action: reschedule_appointment
         
@@ -246,6 +247,37 @@ class AIService:
             ActionIntent si se detecta una acción, None si no
         """
         message_lower = message.lower()
+        
+        # ===== DETECCIÓN: SOLICITUD URGENTE (PRIORIDAD MÁXIMA) =====
+        # Detectar primero para asegurar respuesta inmediata en casos de salud
+        urgent_keywords = [
+            'me siento mal',
+            'me siento enfermo',
+            'creo que me siento mal',
+            'creo que me siento enfermo',
+            'contactarme con alguien',
+            'es posible contactarme',
+            'mi salud',
+            'salud decayó',
+            'salud decayo',
+            'me siento decaído',
+            'me siento decaido',
+            'ayuda',
+            'urgente',
+            'emergencia',
+            'me duele mucho',
+            'no puedo respirar',
+            'sangre',
+            'necesito ayuda'
+        ]
+        
+        if any(word in message_lower for word in urgent_keywords):
+            logger.info("Acción detectada: urgent_help (prioridad máxima)")
+            return ActionIntent(
+                action="urgent_help",
+                params={},
+                confidence=1.0  # Máxima confianza y prioridad
+            )
         
         if conversation.state == ConversationState.RESCHEDULE_WAITING_DATE:
             logger.info("Continuando flujo: esperando fecha")
