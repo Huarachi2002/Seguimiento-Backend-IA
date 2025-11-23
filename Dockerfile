@@ -96,13 +96,6 @@ USER appuser
 # Exponer puerto
 EXPOSE 8000
 
-RUN python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; \
-    model_name = 'Hiachi20/gpt2-spanish-tb-structured'; \
-    print('Downloading model...'); \
-    AutoTokenizer.from_pretrained(model_name, cache_dir='/app/models'); \
-    AutoModelForCausalLM.from_pretrained(model_name, cache_dir='/app/models'); \
-    print('Model downloaded successfully')"
-
 # Comando de inicio
 # Usar exec form para mejor manejo de signals (SIGTERM, etc.)
 # El modelo se descargará automáticamente en el primer request
