@@ -36,7 +36,7 @@ services:
       - TEMPERATURE=0.7
       
       # Configuración del backend de seguimiento
-      - SEGUIMIENTO_SERVICE_URL=http://host.docker.internal:3001
+      - SEGUIMIENTO_SERVICE_URL=http://44.220.135.146:3001
       - SEGUIMIENTO_TIMEOUT=10
       
       # Centro médico
