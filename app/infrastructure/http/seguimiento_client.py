@@ -29,7 +29,7 @@ class SeguimientoClient:
     tiene acceso directo a PostgreSQL.
     """
     
-    def __init__(self, base_url: str = "http://localhost:3001"):
+    def __init__(self, base_url: str = "http://host.docker.internal:3001"):
         """
         Inicializa el cliente Seguimiento.
         
@@ -215,7 +215,7 @@ class SeguimientoClient:
         )
 
         if response:
-            logger.info(f"Notificacion enviada: {response.get('message', 'N/A')}")
+            logger.info(f"Notificacion enviada exitosamente. Supervisores notificados: {len(response) if isinstance(response, list) else 'N/A'}")
             return response
         
         logger.info(f"Notificacion no enviada: {phone_number}")
